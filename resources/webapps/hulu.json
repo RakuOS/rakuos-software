@@ -2,6 +2,7 @@
   "id": "hulu",
   "name": "Hulu",
   "url": "https://www.hulu.com/",
+  "website": "https://www.hulu.com",
   "summary": "Movies and TV shows on demand",
   "description": "Stream movies, TV shows, anime, documentaries and more.",
   "icon": "hulu.png",

@@ -2,6 +2,7 @@
   "id": "xbox_cloud",
   "name": "Xbox Cloud Gaming",
   "url": "https://www.xbox.com/en-us/play",
+  "website": "https://www.xbox.com/en-us/xbox-game-pass/cloud-gaming",
   "summary": "Stream and play your favorite games anywhere with Xbox Game Pass via cloud gaming.",
   "description": "Play Xbox Cloud Gaming on Xbox.com. Use your Xbox Game Pass Ultimate membership to play 100s of consoles games on PC and supported mobile devices.",
   "icon": "xbox_cloud.png",

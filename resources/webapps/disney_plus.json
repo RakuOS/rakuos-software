@@ -2,6 +2,7 @@
   "id": "disney_plus",
   "name": "Disney+",
   "url": "https://www.disneyplus.com/",
+  "website": "https://www.disneyplus.com",
   "summary": "Movies and TV shows on demand From Disney",
   "description": "Stream your favorite Disney movies, TV shows, and more.",
   "icon": "disney_plus.png",

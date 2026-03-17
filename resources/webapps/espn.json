@@ -2,6 +2,7 @@
   "id": "espn",
   "name": "ESPN",
   "url": "https://www.espn.com/watch",
+  "website": "https://www.espn.com",
   "summary": "Movies and TV shows on demand",
   "description": "Stream Sports, TV shows, WWE PLEs and more.",
   "icon": "espn.png",

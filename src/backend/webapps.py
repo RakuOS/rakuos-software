@@ -203,11 +203,15 @@ def install(app_id: str) -> tuple[bool, str]:
         if not icon_path:
             icon_path = "web-browser"
 
+        # Resolve launch URL — url field takes priority, website is the fallback
+        launch_url = app.get("url") or app.get("website", "")
+
         # Write installed JSON sidecar
         installed_data = {
             "id":          app["id"],
             "name":        app["name"],
-            "url":         app["url"],
+            "url":         launch_url,
+            "website":     app.get("website", ""),
             "description": app.get("description", ""),
             "summary":     app.get("summary", ""),
             "icon_path":   icon_path,
@@ -281,7 +285,7 @@ def _write_desktop(app: dict, icon_path: str):
     """Write a .desktop launcher for the web app using cefpython3."""
     app_id = app["id"]
     name   = app["name"]
-    url    = app["url"]
+    url    = app.get("url") or app.get("website", "")
     desc   = app.get("summary") or app.get("description", "")
     cats   = ";".join(app.get("categories", ["Network"])) + ";"
 

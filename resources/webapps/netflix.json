@@ -2,6 +2,7 @@
   "id": "netflix",
   "name": "Netflix",
   "url": "https://netflix.com",
+  "website": "https://www.netflix.com",
   "summary": "Movies and TV shows on demand",
   "description": "Stream movies, TV shows, anime, documentaries and more.",
   "icon": "netflix.png",

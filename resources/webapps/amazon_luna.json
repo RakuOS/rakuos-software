@@ -2,6 +2,7 @@
   "id": "amazon_luna",
   "name": "Amazon Luna",
   "url": "https://luna.amazon.com/",
+  "website": "https://www.amazon.com/luna",
   "summary": "Amazon Luna lets you stream console-quality games on your devices with an internet connection.",
   "description": "Amazon Luna is a gaming service where you can play a rotating library of games, plus party games with GameNight. No downloads, no console, and included with Prime.",
   "icon": "amazon_luna.png",

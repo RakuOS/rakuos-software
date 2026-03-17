@@ -1043,15 +1043,14 @@ class AppDetailPage(QWidget):
         self._desc.setVisible(bool(desc))
         self._desc_head.setVisible(bool(desc))
 
-        # URL info card
+        # Website link — show project homepage if provided, else the launch URL
         from PyQt6.QtWidgets import QLabel
-        url = app.get("url", "")
-        if url:
-            from ..widgets import hline
-            url_lbl = QLabel(f"<a href='{url}'>{url}</a>")
-            url_lbl.setOpenExternalLinks(True)
-            url_lbl.setTextFormat(Qt.TextFormat.RichText)
-            self._info_block.addWidget(url_lbl)
+        website = app.get("website", "") or app.get("url", "")
+        if website:
+            website_lbl = QLabel(f"<a href='{website}'>{website}</a>")
+            website_lbl.setOpenExternalLinks(True)
+            website_lbl.setTextFormat(Qt.TextFormat.RichText)
+            self._info_block.addWidget(website_lbl)
 
         # Web App badge
         badge = QLabel("Web App")
