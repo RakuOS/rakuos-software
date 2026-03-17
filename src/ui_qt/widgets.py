@@ -248,12 +248,13 @@ class AppCard(QFrame):
         name_lbl.setWordWrap(True)
         layout.addWidget(name_lbl)
 
-        summary_lbl = dimmed(QLabel(app.get("summary", "")))
+        layout.addStretch(3)
+        summary_lbl = dimmed(QLabel(app.get("summary", "")[:40] + ("…" if len(app.get("summary", "")) > 40 else "")))
         summary_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         summary_lbl.setWordWrap(True)
-        summary_lbl.setMaximumHeight(36)
+        summary_lbl.setStyleSheet("font-size: 11px;")
         layout.addWidget(summary_lbl)
-        layout.addStretch()
+        layout.addStretch(3)
 
         installed = app.get("installed", False)
         source    = app.get("source", "native")
@@ -289,7 +290,7 @@ class FlowGrid(QWidget):
     def __init__(self, cols: int = 5):
         super().__init__()
         self._layout = QGridLayout(self)
-        self._layout.setSpacing(12)
+        self._layout.setSpacing(24)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._cards: list[AppCard] = []
         self._cols = cols
