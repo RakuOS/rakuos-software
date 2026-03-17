@@ -19,10 +19,10 @@ NAME="${2:?Usage: rakuos-webapp-launcher <url> <name>}"
 # Sanitise name → app id (must match what main.js produces)
 APP_ID="$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')"
 
-# Read custom CSS from per-app file (avoids shell/desktop-file quoting issues)
+# Read custom CSS from per-app file — name-derived id matches what install() writes
 CSS_FILE="${HOME}/.local/share/rakuos/webapps/${APP_ID}.css"
-CUSTOM_CSS="${3:-}"
-if [[ -z "$CUSTOM_CSS" ]] && [[ -f "$CSS_FILE" ]]; then
+CUSTOM_CSS=""
+if [[ -f "$CSS_FILE" ]]; then
     CUSTOM_CSS="$(cat "$CSS_FILE")"
 fi
 

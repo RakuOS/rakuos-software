@@ -221,9 +221,11 @@ def install(app_id: str) -> tuple[bool, str]:
         (INSTALL_DIR / f"{app_id}.json").write_text(
             json.dumps(installed_data, indent=2))
 
-        # Write custom CSS to a dedicated file so the launcher can read it
-        # without any shell/desktop-file quoting issues
-        css_file = INSTALL_DIR / f"{app_id}.css"
+        # Write custom CSS using the name-derived id so it matches the
+        # launcher's APP_ID computation (lowercase, non-alnum → hyphen)
+        import re
+        css_id = re.sub(r'[^a-z0-9]+', '-', app['name'].lower()).strip('-')
+        css_file = INSTALL_DIR / f"{css_id}.css"
         custom_css = app.get("custom_css", "")
         if custom_css:
             css_file.write_text(custom_css)
@@ -260,7 +262,9 @@ def uninstall(app_id: str) -> tuple[bool, str]:
         if desktop.exists():
             desktop.unlink()
 
-        css_file = INSTALL_DIR / f"{app_id}.css"
+        import re
+        css_id = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+        css_file = INSTALL_DIR / f"{css_id}.css"
         if css_file.exists():
             css_file.unlink()
 
@@ -285,7 +289,6 @@ def _write_desktop(app: dict, icon_path: str):
     # pick up the downloaded icon without needing a named theme icon
     icon = icon_path or "web-browser"
 
-    # Launcher command — CSS is read by the launcher from ~/.local/share/rakuos/webapps/{id}.css
     exec_cmd = f"/usr/bin/rakuos-webapp-launcher '{url}' '{name}'"
 
     desktop_content = f"""[Desktop Entry]
