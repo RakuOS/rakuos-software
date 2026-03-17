@@ -179,6 +179,24 @@ def update_all_flatpaks_stream():
         yield "__done__1"
 
 
+def update_flatpak_stream(app_id: str):
+    """Generator that yields output from updating a single flatpak."""
+    try:
+        proc = subprocess.Popen(
+            ["flatpak", "update", "-y", app_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+        for line in proc.stdout:
+            yield line.rstrip()
+        proc.wait()
+        yield f"__done__{proc.returncode}"
+    except Exception as e:
+        yield f"Error: {e}"
+        yield "__done__1"
+
+
 # ── Remote / repo management ──────────────────────────────────────────────────
 
 FLATHUB_URL = "https://dl.flathub.org/repo/flathub.flatpakrepo"

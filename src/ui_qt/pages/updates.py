@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QPushButton, QProgressBar, QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtGui import QPixmap
 
 from ..workers import Worker, StreamWorker
 from ..widgets import SectionTitle, LoadingWidget, TerminalWidget, IconWidget, hline
@@ -43,13 +44,23 @@ class PackageUpdateRow(QFrame):
 
         if show_icon:
             icon_w = IconWidget(size=36)
-            app_id = pkg.get("app_id", "")
-            icon_w.set_icon_name(
-                pkg.get("icon", ""),
-                app_id=app_id,
-                pkg_name=pkg.get("name", ""),
-                flatpak_id=app_id if pkg.get("is_flatpak") else "",
-            )
+            if pkg.get("is_appimage") and pkg.get("icon_path"):
+                pix = QPixmap(pkg["icon_path"]).scaled(
+                    36, 36,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                if not pix.isNull():
+                    icon_w.setPixmap(pix)
+                    icon_w.setText("")
+            else:
+                app_id = pkg.get("app_id", "") or pkg.get("id", "")
+                icon_w.set_icon_name(
+                    pkg.get("icon", ""),
+                    app_id=app_id,
+                    pkg_name=pkg.get("name", ""),
+                    flatpak_id=app_id if pkg.get("is_flatpak") else "",
+                )
             hl.addWidget(icon_w)
 
         # Name + version + flatpak badge
@@ -86,10 +97,15 @@ class PackageUpdateRow(QFrame):
         # Progress bar — hidden until update starts
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
-        self._progress.setFixedHeight(4)
+        self._progress.setFixedHeight(6)
         self._progress.setTextVisible(False)
         self._progress.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._progress.setStyleSheet(
+            "QProgressBar { border: none; background: rgba(128,128,128,0.2);"
+            " border-radius: 3px; }"
+            "QProgressBar::chunk { background: #4caf50; border-radius: 3px; }"
+        )
         self._progress.hide()
         hl.addWidget(self._progress, stretch=1)
 
@@ -104,7 +120,13 @@ class PackageUpdateRow(QFrame):
 
     def set_updating(self):
         self._btn.hide()
+        self._progress.setRange(0, 0)  # indeterminate until we get percentage
         self._progress.show()
+
+    def set_progress(self, pct: int):
+        """Switch to determinate progress and set percentage (0-100)."""
+        self._progress.setRange(0, 100)
+        self._progress.setValue(pct)
 
     def set_done(self, success: bool):
         self._progress.hide()
@@ -125,6 +147,7 @@ class UpdateSection(QFrame):
         super().__init__(parent)
         self._packages = packages
         self._rows: list[PackageUpdateRow] = []
+        self._row_handler = None  # callable(row, pkg) set by page
         self.setObjectName("card")
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
@@ -140,8 +163,7 @@ class UpdateSection(QFrame):
         hdr.addSpacing(12)
         self._update_all_btn = QPushButton("Update All")
         self._update_all_btn.setFixedWidth(96)
-        self._update_all_btn.clicked.connect(
-            lambda: self.update_all_clicked.emit(self._packages))
+        self._update_all_btn.clicked.connect(self._on_update_all_clicked)
         hdr.addWidget(self._update_all_btn)
         vl.addLayout(hdr)
         vl.addWidget(hline())
@@ -149,7 +171,8 @@ class UpdateSection(QFrame):
 
         for i, pkg in enumerate(packages):
             row = PackageUpdateRow(pkg, show_icon=show_icons)
-            row.update_clicked.connect(lambda p: self.update_all_clicked.emit([p]))
+            row.update_clicked.connect(
+                lambda p, r=row: self._on_row_clicked(r, p))
             vl.addWidget(row)
             self._rows.append(row)
             if i < len(packages) - 1:
@@ -157,6 +180,20 @@ class UpdateSection(QFrame):
                 sep.setFrameShape(QFrame.Shape.HLine)
                 sep.setStyleSheet("color: rgba(128,128,128,0.15);")
                 vl.addWidget(sep)
+
+    def set_row_handler(self, handler):
+        """Register a callable(row, pkg) invoked when a single row Update is clicked."""
+        self._row_handler = handler
+
+    def _on_row_clicked(self, row: PackageUpdateRow, pkg: dict):
+        row.set_updating()
+        if self._row_handler:
+            self._row_handler(row, pkg)
+
+    def _on_update_all_clicked(self):
+        for row in self._rows:
+            row.set_updating()
+        self.update_all_clicked.emit(self._packages)
 
     def set_all_updating(self):
         self._update_all_btn.setEnabled(False)
@@ -294,6 +331,19 @@ class UpdatesPage(QWidget):
         self._update_all_btn.clicked.connect(self._do_update_all)
         topbar.addWidget(self._update_all_btn)
 
+        self._overall_bar = QProgressBar()
+        self._overall_bar.setRange(0, 0)
+        self._overall_bar.setFixedHeight(8)
+        self._overall_bar.setFixedWidth(200)
+        self._overall_bar.setTextVisible(False)
+        self._overall_bar.setStyleSheet(
+            "QProgressBar { border: none; background: rgba(128,128,128,0.2);"
+            " border-radius: 4px; }"
+            "QProgressBar::chunk { background: #4caf50; border-radius: 4px; }"
+        )
+        self._overall_bar.hide()
+        topbar.addWidget(self._overall_bar)
+
         self._refresh_btn = QPushButton("↻  Check for Updates")
         self._refresh_btn.setFixedWidth(160)
         self._refresh_btn.clicked.connect(lambda: self.load(None))
@@ -407,6 +457,7 @@ class UpdatesPage(QWidget):
         if app_group:
             sec = UpdateSection("Applications", app_group, show_icons=True)
             sec.update_all_clicked.connect(self._on_app_update)
+            sec.set_row_handler(self._on_single_row_update)
             self._vl.addWidget(sec)
             self._all_sections.append(sec)
 
@@ -415,6 +466,7 @@ class UpdatesPage(QWidget):
         if fp_runtimes:
             sec = UpdateSection("Add-ons", fp_runtimes)
             sec.update_all_clicked.connect(self._do_fp_update)
+            sec.set_row_handler(self._on_single_row_update)
             self._vl.addWidget(sec)
             self._all_sections.append(sec)
 
@@ -423,6 +475,7 @@ class UpdatesPage(QWidget):
         if sys_pkgs:
             sec = UpdateSection("System Dependencies", sys_pkgs)
             sec.update_all_clicked.connect(self._do_pkg_update)
+            sec.set_row_handler(self._on_single_row_update)
             self._vl.addWidget(sec)
             self._all_sections.append(sec)
 
@@ -450,8 +503,74 @@ class UpdatesPage(QWidget):
 
     def _show_terminal(self):
         if self._terminal:
-            self._terminal.reset()
+            if not self._terminal.isVisible():
+                self._terminal.clear()
             self._terminal.show()
+
+    def _on_single_row_update(self, row, pkg: dict):
+        """Handle a single-row Update button click with per-row progress."""
+        self._show_terminal()
+        if pkg.get("is_appimage"):
+            app_id  = pkg.get("id", "")
+            dl_url  = pkg.get("download_url", "")
+            if not app_id or not dl_url:
+                row.set_done(False)
+                return
+            from backend import appimages as _aim
+
+            def _line_handler(line, _row=row):
+                if line.startswith("DOWNLOAD:"):
+                    try:
+                        _row.set_progress(int(line.split(":")[1]))
+                    except ValueError:
+                        pass
+                else:
+                    self._terminal.append_line(line)
+
+            def _ai_done(code, _row=row, _name=pkg.get("name", app_id)):
+                _row.set_done(code == 0)
+                if self._terminal:
+                    self._terminal.append_line(
+                        f"\n✓ {_name} updated." if code == 0
+                        else f"\n✗ {_name} update failed (exit {code}).")
+
+            w = StreamWorker(
+                lambda _id=app_id, _url=dl_url:
+                    _aim.update_appimage_stream(_id, _url))
+            w.line.connect(_line_handler)
+            w.done.connect(_ai_done)
+            w.start()
+            self._workers.append(w)
+        elif pkg.get("is_flatpak"):
+            app_id = pkg.get("app_id") or pkg.get("id", "")
+            name   = pkg.get("name", app_id)
+
+            def _fp_done(code, _row=row, _name=name):
+                _row.set_done(code == 0)
+                if self._terminal:
+                    self._terminal.append_line(
+                        f"\n✓ {_name} updated." if code == 0
+                        else f"\n✗ {_name} update failed (exit {code}).")
+
+            w = StreamWorker(lambda _id=app_id: flatpak.update_flatpak_stream(_id))
+            w.line.connect(self._terminal.append_line)
+            w.done.connect(_fp_done)
+            w.start()
+            self._workers.append(w)
+        else:
+            # RPM — run full package upgrade (no single-pkg stream)
+            def _rpm_done(code, _row=row):
+                _row.set_done(code == 0)
+                if self._terminal:
+                    self._terminal.append_line(
+                        "\n✓ Package updated." if code == 0
+                        else f"\n✗ Update failed (exit {code}).")
+
+            w = StreamWorker(upd.upgrade_packages_stream)
+            w.line.connect(self._terminal.append_line)
+            w.done.connect(_rpm_done)
+            w.start()
+            self._workers.append(w)
 
     def _on_app_update(self, pkg_list: list):
         """Mixed list of GUI RPMs + Flatpaks + AppImages — split and run each."""
@@ -513,18 +632,23 @@ class UpdatesPage(QWidget):
         self._show_terminal()
         for sec in self._all_sections:
             sec.set_all_updating()
-        self._update_all_btn.setEnabled(False)
-        self._update_all_btn.setText("Updating…")
+        self._update_all_btn.hide()
+        self._overall_bar.setRange(0, 0)
+        self._overall_bar.show()
         w = StreamWorker(self._run_all_updates_stream)
         w.line.connect(self._terminal.append_line)
-        w.done.connect(lambda c: (
-            self._terminal.append_line(
-                "\n✓ All updates complete." if c == 0
-                else f"\n✗ Some updates failed (exit {c})."),
-            [sec.set_all_done(c == 0) for sec in self._all_sections]
-        ))
+        w.done.connect(self._all_updates_done)
         w.start()
         self._workers.append(w)
+
+    def _all_updates_done(self, code: int):
+        self._overall_bar.hide()
+        if self._terminal:
+            self._terminal.append_line(
+                "\n✓ All updates complete." if code == 0
+                else f"\n✗ Some updates failed (exit {code}).")
+        for sec in self._all_sections:
+            sec.set_all_done(code == 0)
 
     def _run_all_updates_stream(self):
         yield from upd.upgrade_packages_stream()
@@ -536,7 +660,10 @@ class UpdatesPage(QWidget):
                 app_id = ai_upd.get("id", "")
                 dl_url = ai_upd.get("download_url", "")
                 if app_id and dl_url:
-                    yield from _aim.update_appimage_stream(app_id, dl_url)
+                    for line in _aim.update_appimage_stream(app_id, dl_url):
+                        # Skip raw progress markers — Update All uses indeterminate bar
+                        if not line.startswith("DOWNLOAD:"):
+                            yield line
         except Exception as e:
             yield f"AppImage update error: {e}"
         yield "__done__0"

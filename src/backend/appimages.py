@@ -525,6 +525,7 @@ def _check_github(app: dict, api_url: str, pattern: str,
                 "current":       current,
                 "available":     tag,
                 "download_url":  download_url,
+                "icon_path":     app.get("icon_path", ""),
                 "source":        "appimage",
             }
     except Exception as e:
@@ -569,6 +570,7 @@ def _check_gitlab(app: dict, api_url: str, pattern: str,
                 "current":      current,
                 "available":    tag,
                 "download_url": download_url,
+                "icon_path":    app.get("icon_path", ""),
                 "source":       "appimage",
             }
     except Exception as e:
@@ -606,6 +608,7 @@ def _check_url(app: dict, url: str, pattern: str,
                 "current":      current,
                 "available":    "new version",
                 "download_url": url,
+                "icon_path":    app.get("icon_path", ""),
                 "source":       "appimage",
             }
         elif last_mod and last_mod != stored_mod:
@@ -618,6 +621,7 @@ def _check_url(app: dict, url: str, pattern: str,
                 "current":      current,
                 "available":    "new version",
                 "download_url": url,
+                "icon_path":    app.get("icon_path", ""),
                 "source":       "appimage",
             }
     except Exception as e:
@@ -660,15 +664,29 @@ def update_appimage_stream(app_id: str, download_url: str):
 
         yield f"Downloading update for {name}..."
 
-        # Download to temp file
+        # Download to temp file with progress
         tmp_path = INSTALL_DIR / f"{app_id}.AppImage.tmp"
-        def _progress(block_num, block_size, total_size):
-            if total_size > 0:
-                pct = min(100, block_num * block_size * 100 // total_size)
-                print(f"\rDownloading... {pct}%", end="", flush=True)
-
-        urllib.request.urlretrieve(download_url, tmp_path, _progress)
-        yield f"Download complete."
+        req = urllib.request.Request(
+            download_url,
+            headers={"User-Agent": "RakuOS-Software-Center/1.0"}
+        )
+        with _redirect_opener.open(req, timeout=120) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            last_pct = -1
+            with open(tmp_path, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        pct = min(100, downloaded * 100 // total)
+                        if pct != last_pct:
+                            last_pct = pct
+                            yield f"DOWNLOAD:{pct}"
+        yield "Download complete."
 
         # Replace old AppImage
         if old_path.exists():

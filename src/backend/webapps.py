@@ -214,6 +214,7 @@ def install(app_id: str) -> tuple[bool, str]:
             "categories":  app.get("categories", []),
             "keywords":    app.get("keywords", []),
             "screenshots": app.get("screenshots", []),
+            "custom_css":  app.get("custom_css", ""),
             "source":      "webapp",
             "installed":   True,
         }
@@ -271,8 +272,14 @@ def _write_desktop(app: dict, icon_path: str):
     # pick up the downloaded icon without needing a named theme icon
     icon = icon_path or "web-browser"
 
-    # Launcher command — uses cefpython3 wrapper
-    exec_cmd = f"/usr/bin/rakuos-webapp-launcher '{url}' '{name}'"
+    # Launcher command
+    custom_css = app.get("custom_css", "")
+    if custom_css:
+        # Escape single quotes in the CSS for shell safety
+        css_escaped = custom_css.replace("'", "'\\''")
+        exec_cmd = f"/usr/bin/rakuos-webapp-launcher '{url}' '{name}' '{css_escaped}'"
+    else:
+        exec_cmd = f"/usr/bin/rakuos-webapp-launcher '{url}' '{name}'"
 
     desktop_content = f"""[Desktop Entry]
 Name={name}
