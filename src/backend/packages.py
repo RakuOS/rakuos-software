@@ -2,6 +2,7 @@
 packages.py — Native package management via rakuos install/remove and AppStream metadata
 """
 
+import json
 import logging
 import os
 import re

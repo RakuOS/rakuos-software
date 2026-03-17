@@ -43,8 +43,13 @@ class PackageUpdateRow(QFrame):
 
         if show_icon:
             icon_w = IconWidget(size=36)
+            app_id = pkg.get("app_id", "")
             icon_w.set_icon_name(
-                "", app_id=pkg.get("app_id", ""), pkg_name=pkg.get("name", ""))
+                pkg.get("icon", ""),
+                app_id=app_id,
+                pkg_name=pkg.get("name", ""),
+                flatpak_id=app_id if pkg.get("is_flatpak") else "",
+            )
             hl.addWidget(icon_w)
 
         # Name + version + flatpak badge

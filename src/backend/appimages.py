@@ -33,9 +33,24 @@ import subprocess
 import tempfile
 import urllib.request
 import urllib.error
+import urllib.parse
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+class _HeaderPreservingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects while preserving request headers (e.g. Accept, User-Agent)."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            for key, val in req.header_items():
+                if key.lower() not in ("host", "content-length", "content-type"):
+                    new_req.add_unredirected_header(key, val)
+        return new_req
+
+
+_redirect_opener = urllib.request.build_opener(_HeaderPreservingRedirectHandler)
 
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -451,16 +466,42 @@ def _check_single_update(app: dict) -> dict | None:
     return None
 
 
+def _normalize_github_url(url: str) -> str:
+    """Convert a GitHub web URL to the API URL if needed."""
+    # Already an API URL
+    if "api.github.com" in url:
+        return url
+    # Match https://github.com/owner/repo[/...]
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)", url)
+    if m:
+        return GITHUB_API.format(owner=m.group(1), repo=m.group(2))
+    return url
+
+
+def _normalize_gitlab_url(url: str) -> str:
+    """Convert a GitLab web URL to the API URL if needed."""
+    # Already an API URL
+    if "/api/v4/" in url:
+        return url
+    # Match https://gitlab.com/namespace/repo[/...]
+    m = re.match(r"https?://gitlab\.com/([^/]+/[^/]+)", url)
+    if m:
+        project = urllib.parse.quote(m.group(1), safe="")
+        return GITLAB_API.format(project=project)
+    return url
+
+
 def _check_github(app: dict, api_url: str, pattern: str,
                   current: str) -> dict | None:
     """Check GitHub releases API for a newer version."""
+    api_url = _normalize_github_url(api_url)
     try:
         req = urllib.request.Request(
             api_url,
             headers={"User-Agent": "RakuOS-Software-Center/1.0",
                      "Accept": "application/vnd.github+json"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _redirect_opener.open(req, timeout=15) as resp:
             data = json.loads(resp.read())
 
         tag     = data.get("tag_name", "").lstrip("v")
@@ -494,12 +535,14 @@ def _check_github(app: dict, api_url: str, pattern: str,
 def _check_gitlab(app: dict, api_url: str, pattern: str,
                   current: str) -> dict | None:
     """Check GitLab releases API for a newer version."""
+    api_url = _normalize_gitlab_url(api_url)
     try:
         req = urllib.request.Request(
             api_url,
-            headers={"User-Agent": "RakuOS-Software-Center/1.0"}
+            headers={"User-Agent": "RakuOS-Software-Center/1.0",
+                     "Accept": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _redirect_opener.open(req, timeout=15) as resp:
             releases = json.loads(resp.read())
 
         if not releases:

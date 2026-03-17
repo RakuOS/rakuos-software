@@ -224,7 +224,7 @@ class AppImageDetailPage(QWidget):
         # URL field (shown for github/gitlab/url)
         self._url_field = QLineEdit()
         self._url_field.setPlaceholderText(
-            "e.g. https://api.github.com/repos/owner/repo/releases/latest")
+            "e.g. https://github.com/owner/repo or https://api.github.com/repos/owner/repo/releases/latest")
         self._url_field.setText(info.get("update_url", ""))
         self._url_field.setVisible(cur != "none")
         self._vl.addWidget(self._url_field)

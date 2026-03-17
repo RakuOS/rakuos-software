@@ -21,7 +21,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QPixmap
 
 from ..workers import Worker
-from ..widgets import SectionTitle, LoadingWidget, hline
+from ..widgets import SectionTitle, LoadingWidget, hline, IconWidget
 from ..theme import dimmed, bold_font
 from backend import packages, flatpak, appimages, webapps
 
@@ -50,11 +50,12 @@ class InstalledRow(QFrame):
         hl.setSpacing(10)
 
         # ── Icon 32×32 ────────────────────────────────────────────────────────
-        icon_lbl = QLabel(self)
-        icon_lbl.setFixedSize(32, 32)
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_path = app.get("icon_path", "")
         if icon_path:
+            # AppImages / webapps have an absolute icon_path on disk
+            icon_lbl = QLabel(self)
+            icon_lbl.setFixedSize(32, 32)
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             pix = QPixmap(icon_path)
             if not pix.isNull():
                 icon_lbl.setPixmap(pix.scaled(
@@ -64,7 +65,15 @@ class InstalledRow(QFrame):
             else:
                 icon_lbl.setText(self._fallback_icon(app))
         else:
-            icon_lbl.setText(self._fallback_icon(app))
+            # RPM / Flatpak — use IconWidget for full resolution chain
+            # (swcatalog cache → Flatpak local → remote KDE/Flathub → fromTheme)
+            icon_lbl = IconWidget(32)
+            icon_lbl.set_icon_name(
+                app.get("icon", ""),
+                app_id=app.get("id", ""),
+                pkg_name=app.get("pkg_name", ""),
+                flatpak_id=app.get("flatpak_id", ""),
+            )
         hl.addWidget(icon_lbl)
 
         # ── Name (bold) + summary (small, dimmed) — single expanding widget ────
@@ -309,8 +318,9 @@ class InstalledPage(QWidget):
         self._workers.append(w)
 
     def _fetch(self) -> dict:
-        # RPM: only packages from packages.list
-        rpm_list = self._get_overlay_packages()
+        # RPM: fully enriched via AppStream + Flatpak fallback matching,
+        # same data structure as home/explore so detail page renders identically
+        rpm_list = packages.get_installed_with_metadata()
 
         # Flatpak: apps + runtimes separately
         fp_apps     = flatpak.get_installed_flatpaks()
@@ -323,43 +333,6 @@ class InstalledPage(QWidget):
             "appimages":   appimages.get_installed(),
             "webapps":     webapps.get_installed(),
         }
-
-    def _get_overlay_packages(self) -> list[dict]:
-        """Read packages.list and return enriched metadata for each package."""
-        import re
-        from pathlib import Path
-        pkgs_file = Path("/var/lib/rakuos/packages.list")
-        if not pkgs_file.exists():
-            return []
-        pkg_names = [
-            l.strip() for l in pkgs_file.read_text().splitlines()
-            if l.strip() and not l.startswith("#")
-        ]
-        if not pkg_names:
-            return []
-        # Get version for each installed package
-        result = subprocess.run(
-            ["rpm", "-q", "--queryformat",
-             "%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n"] + pkg_names,
-            capture_output=True, text=True
-        )
-        items = []
-        for line in result.stdout.splitlines():
-            parts = line.split("\t")
-            if len(parts) >= 1 and "not installed" not in parts[0]:
-                name    = parts[0].strip()
-                version = parts[1].strip() if len(parts) > 1 else ""
-                summary = parts[2].strip() if len(parts) > 2 else ""
-                items.append({
-                    "id":       name,
-                    "pkg_name": name,
-                    "name":     name,
-                    "version":  version,
-                    "summary":  summary,
-                    "source":   "native",
-                    "installed": True,
-                })
-        return items
 
     def _get_flatpak_runtimes(self) -> list[dict]:
         """Return installed Flatpak runtimes and extensions."""
