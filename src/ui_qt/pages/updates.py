@@ -13,6 +13,7 @@ Empty state: large green checkmark with "Check for Updates" top-right.
 Per-package rows have inline progress bars during update.
 """
 
+import re as _re
 import subprocess
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QFrame, QLabel,
@@ -20,6 +21,41 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QPixmap
+
+
+# ── Progress parsers ──────────────────────────────────────────────────────────
+
+def _parse_bootc_progress(line: str) -> int | None:
+    """Parse 'layers[N/M]' from bootc output → 0-100."""
+    m = _re.search(r'layers\[(\d+)/(\d+)\]', line)
+    if m:
+        n, total = int(m.group(1)), int(m.group(2))
+        if total > 0:
+            return min(int(n * 100 / total), 100)
+    return None
+
+
+def _parse_flatpak_progress(line: str) -> int | None:
+    """Parse percentage or [N/M] from flatpak output → 0-100."""
+    m = _re.search(r'(\d+)%', line)
+    if m:
+        return min(int(m.group(1)), 100)
+    m = _re.search(r'\[(\d+)/(\d+)\]', line)
+    if m:
+        n, total = int(m.group(1)), int(m.group(2))
+        if total > 0:
+            return min(int(n * 100 / total), 100)
+    return None
+
+
+def _parse_dnf_progress(line: str) -> int | None:
+    """Parse [N/M] transaction steps from dnf5 output → 0-100."""
+    m = _re.search(r'\[(\d+)/(\d+)\]', line)
+    if m:
+        n, total = int(m.group(1)), int(m.group(2))
+        if total > 0:
+            return min(int(n * 100 / total), 100)
+    return None
 
 from ..workers import Worker, StreamWorker
 from ..widgets import SectionTitle, LoadingWidget, TerminalWidget, IconWidget, hline
@@ -262,10 +298,15 @@ class ImageUpdateCard(QFrame):
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
-        self._progress.setFixedHeight(4)
+        self._progress.setFixedHeight(8)
         self._progress.setTextVisible(False)
         self._progress.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._progress.setStyleSheet(
+            "QProgressBar { border: none; background: rgba(128,128,128,0.2);"
+            " border-radius: 4px; }"
+            "QProgressBar::chunk { background: #4caf50; border-radius: 4px; }"
+        )
         self._progress.hide()
         row_hl.addWidget(self._progress, stretch=1)
 
@@ -289,7 +330,12 @@ class ImageUpdateCard(QFrame):
 
     def set_updating(self):
         self._update_btn.hide()
+        self._progress.setRange(0, 0)
         self._progress.show()
+
+    def set_progress(self, pct: int):
+        self._progress.setRange(0, 100)
+        self._progress.setValue(pct)
 
     def set_done(self, success: bool):
         self._progress.hide()
@@ -545,6 +591,13 @@ class UpdatesPage(QWidget):
             app_id = pkg.get("app_id") or pkg.get("id", "")
             name   = pkg.get("name", app_id)
 
+            def _fp_line(line, _row=row):
+                pct = _parse_flatpak_progress(line)
+                if pct is not None:
+                    _row.set_progress(pct)
+                if self._terminal:
+                    self._terminal.append_line(line)
+
             def _fp_done(code, _row=row, _name=name):
                 _row.set_done(code == 0)
                 if self._terminal:
@@ -553,12 +606,19 @@ class UpdatesPage(QWidget):
                         else f"\n✗ {_name} update failed (exit {code}).")
 
             w = StreamWorker(lambda _id=app_id: flatpak.update_flatpak_stream(_id))
-            w.line.connect(self._terminal.append_line)
+            w.line.connect(_fp_line)
             w.done.connect(_fp_done)
             w.start()
             self._workers.append(w)
         else:
             # RPM — run full package upgrade (no single-pkg stream)
+            def _rpm_line(line, _row=row):
+                pct = _parse_dnf_progress(line)
+                if pct is not None:
+                    _row.set_progress(pct)
+                if self._terminal:
+                    self._terminal.append_line(line)
+
             def _rpm_done(code, _row=row):
                 _row.set_done(code == 0)
                 if self._terminal:
@@ -567,7 +627,7 @@ class UpdatesPage(QWidget):
                         else f"\n✗ Update failed (exit {code}).")
 
             w = StreamWorker(upd.upgrade_packages_stream)
-            w.line.connect(self._terminal.append_line)
+            w.line.connect(_rpm_line)
             w.done.connect(_rpm_done)
             w.start()
             self._workers.append(w)
@@ -673,13 +733,21 @@ class UpdatesPage(QWidget):
             self._image_card.set_updating()
         self._show_terminal()
         info = self._image_info or {}
+
+        def _img_line(line):
+            pct = _parse_bootc_progress(line)
+            if pct is not None and self._image_card:
+                self._image_card.set_progress(pct)
+            if self._terminal:
+                self._terminal.append_line(line)
+
         w = StreamWorker(
             upd.upgrade_image_stream,
             info.get("type", "switch"),
             info.get("repo", ""),
             info.get("available", ""),
         )
-        w.line.connect(self._terminal.append_line)
+        w.line.connect(_img_line)
         w.done.connect(self._image_done)
         w.start()
         self._workers.append(w)
