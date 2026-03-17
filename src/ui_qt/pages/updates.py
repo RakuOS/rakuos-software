@@ -753,14 +753,57 @@ class UpdatesPage(QWidget):
         self._workers.append(w)
 
     def _image_done(self, code: int):
-        if self._image_card:
-            self._image_card.set_done(code == 0)
         if code == 0:
-            self._terminal.append_line("\n✓ Image staged. Reboot to apply.")
-            if self._reboot_btn:
-                self._reboot_btn.show()
+            self._show_reboot_required()
         else:
-            self._terminal.append_line(f"\n✗ Failed (exit {code}).")
+            if self._image_card:
+                self._image_card.set_done(False)
+            if self._terminal:
+                self._terminal.append_line(f"\n✗ Failed (exit {code}).")
+
+    def _show_reboot_required(self):
+        """Clear the page and show a centered 'reboot to apply' state."""
+        self._clear()
+        self._update_all_btn.hide()
+        self._overall_bar.hide()
+
+        self._vl.addStretch()
+
+        icon_lbl = QLabel("⟳")
+        f = icon_lbl.font()
+        f.setPointSize(f.pointSize() + 24)
+        icon_lbl.setFont(f)
+        icon_lbl.setStyleSheet("color: #4caf50;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vl.addWidget(icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        title_lbl = QLabel("Update staged — reboot to apply")
+        tf = title_lbl.font()
+        tf.setPointSize(tf.pointSize() + 4)
+        tf.setBold(True)
+        title_lbl.setFont(tf)
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vl.addWidget(title_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        sub_lbl = dimmed(QLabel("The new system image has been downloaded and staged.\nReboot to boot into the updated system."))
+        sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vl.addSpacing(8)
+        self._vl.addWidget(sub_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self._vl.addSpacing(24)
+
+        reboot_btn = QPushButton("🔄  Reboot Now")
+        reboot_btn.setFixedWidth(180)
+        reboot_btn.setFixedHeight(40)
+        reboot_btn.setStyleSheet(
+            "QPushButton { background: #4caf50; color: white; border-radius: 6px;"
+            " font-size: 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #43a047; }"
+        )
+        reboot_btn.clicked.connect(upd.schedule_reboot)
+        self._vl.addWidget(reboot_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self._vl.addStretch()
 
     def _do_rollback(self):
         self._show_terminal()
