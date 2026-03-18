@@ -42,6 +42,13 @@
   <url type="homepage">https://github.com/PancakeTAS/lsfg-vk</url>
   <url type="bugtracker">https://github.com/PancakeTAS/lsfg-vk/issues</url>
 
+  <screenshots>
+  <screenshot type="default">
+    <caption>Helium browser main window</caption>
+    <image type="source" width="1600" height="900">https://uploads.golmedia.net/uploads/articles/article_media/19130422201754050082gol1.png</image>
+  </screenshot>
+</screenshots>
+
   <launchable type="desktop-id">gay.pancake.lsfg-vk-ui.desktop</launchable>
 
   <provides>
