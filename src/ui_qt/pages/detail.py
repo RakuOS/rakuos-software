@@ -267,12 +267,17 @@ class AppDetailPage(QWidget):
         left.addWidget(self._star_widget)
 
         left.addSpacing(8)
-        self._meta_row = QHBoxLayout()
+        # Fixed-height container so the meta buttons row always occupies its
+        # space — prevents name/summary from snapping when buttons load async.
+        _meta_container = QWidget()
+        _meta_container.setFixedHeight(34)
+        self._meta_row = QHBoxLayout(_meta_container)
         self._meta_row.setSpacing(6)
         self._meta_row.setContentsMargins(0, 0, 0, 0)
-        left.addLayout(self._meta_row)
+        left.addWidget(_meta_container)
 
         hero.addLayout(left, stretch=1)
+        hero.setAlignment(left, Qt.AlignmentFlag.AlignTop)
 
         # Right: version/size info block (actions moved to top bar)
         right = QVBoxLayout()
@@ -284,6 +289,7 @@ class AppDetailPage(QWidget):
         right.addLayout(self._info_block)
 
         hero.addLayout(right)
+        hero.setAlignment(right, Qt.AlignmentFlag.AlignTop)
         self._vl.addLayout(hero)
         self._vl.addWidget(hline())
         self._vl.addSpacing(20)
@@ -397,6 +403,12 @@ class AppDetailPage(QWidget):
         self._desc.setText(desc)
         self._desc.setVisible(bool(desc))
         self._desc_head.setVisible(bool(desc))
+
+        # Pre-populate info block from initial app dict so hero layout is
+        # already at its final size when the page first renders — prevents
+        # the name/summary from snapping position when the background fetch
+        # later updates version/size/license.
+        self._render_info_block(app, None)
 
         self._render_basic_actions(app)
 

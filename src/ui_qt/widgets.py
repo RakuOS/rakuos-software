@@ -497,9 +497,6 @@ class StarRatingWidget(QLabel):
             dimmed(self)
         else:
             stars = stars_from_rating(rating_0_100)
-            f = self.font()
-            f.setPointSize(f.pointSize() + 2)
-            self.setFont(f)
             self.setText(f"{stars}  ({count} ratings)")
 
 
