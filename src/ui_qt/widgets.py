@@ -240,7 +240,20 @@ class AppCard(QFrame):
         layout.setSpacing(6)
 
         self.icon_w = IconWidget(56)
-        self.icon_w.set_icon_name(app.get("icon", ""), app_id=app.get("id", ""), pkg_name=app.get("pkg_name", ""), flatpak_id=app.get("flatpak_id", ""))
+        icon_path = app.get("icon_path", "")
+        if icon_path:
+            pix = QPixmap(icon_path).scaled(
+                56, 56,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            if not pix.isNull():
+                self.icon_w.setPixmap(pix)
+                self.icon_w.setText("")
+            else:
+                self.icon_w.set_icon_name(app.get("icon", ""), app_id=app.get("id", ""), pkg_name=app.get("pkg_name", ""), flatpak_id=app.get("flatpak_id", ""))
+        else:
+            self.icon_w.set_icon_name(app.get("icon", ""), app_id=app.get("id", ""), pkg_name=app.get("pkg_name", ""), flatpak_id=app.get("flatpak_id", ""))
         layout.addWidget(self.icon_w, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         name_lbl = bold_font(QLabel(app.get("name", "")))
@@ -262,6 +275,8 @@ class AppCard(QFrame):
             badge = StatusBadge("Installed", col_success())
         elif source == "flatpak":
             badge = StatusBadge("Flatpak", _c(QPalette.ColorRole.Highlight))
+        elif source == "webapp":
+            badge = StatusBadge("Web App", _c(QPalette.ColorRole.Highlight))
         else:
             badge = StatusBadge("RPM", col_warning())
         layout.addWidget(badge)

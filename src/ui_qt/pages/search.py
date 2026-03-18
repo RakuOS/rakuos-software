@@ -10,7 +10,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from ..workers import Worker
 from ..widgets import FlowGrid, LoadingWidget
 from ..theme import dimmed
-from backend import packages, flatpak
+from backend import packages, flatpak, webapps as _webapps
 
 
 class SearchPage(QWidget):
@@ -41,7 +41,20 @@ class SearchPage(QWidget):
     def search(self, query: str):
         self._clear()
         self._vl.addWidget(LoadingWidget(f'Searching "{query}"…'))
-        w = Worker(lambda q=query: packages.search_packages(q) + flatpak.search_flatpaks(q))
+        def _run_search(q):
+            results = packages.search_packages(q) + flatpak.search_flatpaks(q)
+            results += _webapps.search_webapps(q)
+            # Deduplicate by (id, source)
+            seen = set()
+            deduped = []
+            for app in results:
+                key = (app.get("id", ""), app.get("source", ""))
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(app)
+            return deduped
+
+        w = Worker(lambda q=query: _run_search(q))
         w.result.connect(self._on_results)
         w.start()
         self._workers.append(w)

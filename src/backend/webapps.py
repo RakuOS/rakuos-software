@@ -163,6 +163,19 @@ def _resolve_icon(app: dict) -> str:
 
 # ── Install / Uninstall ───────────────────────────────────────────────────────
 
+def search_webapps(query: str) -> list[dict]:
+    """Return catalog web apps whose name, summary, description, or keywords match query."""
+    q = query.lower()
+    results = []
+    for app in get_catalog():
+        if (q in app.get("name", "").lower() or
+                q in app.get("summary", "").lower() or
+                q in app.get("description", "").lower() or
+                any(q in kw.lower() for kw in app.get("keywords", []))):
+            results.append(app)
+    return results
+
+
 def is_installed(app_id: str) -> bool:
     return (INSTALL_DIR / f"{app_id}.json").exists()
 

@@ -11,6 +11,8 @@ Top bar: "Check for Updates" (always) + "Update All" (when updates exist)
 Empty state: large green checkmark with "Check for Updates" top-right.
 
 Per-package rows have inline progress bars during update.
+Rows dissolve when complete; terminal only shown on error.
+OS image update always runs last; success → reboot-required screen.
 """
 
 import re as _re
@@ -19,8 +21,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QFrame, QLabel,
     QHBoxLayout, QPushButton, QProgressBar, QSizePolicy,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QPixmap
+
+from ..workers import Worker, StreamWorker
+from ..widgets import SectionTitle, LoadingWidget, TerminalWidget, IconWidget, hline
+from ..theme import dimmed
+from backend import flatpak, updates as upd
 
 
 # ── Progress parsers ──────────────────────────────────────────────────────────
@@ -56,11 +63,6 @@ def _parse_dnf_progress(line: str) -> int | None:
         if total > 0:
             return min(int(n * 100 / total), 100)
     return None
-
-from ..workers import Worker, StreamWorker
-from ..widgets import SectionTitle, LoadingWidget, TerminalWidget, IconWidget, hline
-from ..theme import dimmed
-from backend import flatpak, updates as upd
 
 
 # ── Per-package row ───────────────────────────────────────────────────────────
@@ -99,7 +101,6 @@ class PackageUpdateRow(QFrame):
                 )
             hl.addWidget(icon_w)
 
-        # Name + version + flatpak badge
         info_col = QVBoxLayout()
         info_col.setSpacing(1)
 
@@ -130,7 +131,6 @@ class PackageUpdateRow(QFrame):
         info_col.addLayout(ver_row)
         hl.addLayout(info_col, stretch=1)
 
-        # Progress bar — hidden until update starts
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setFixedHeight(6)
@@ -156,21 +156,29 @@ class PackageUpdateRow(QFrame):
 
     def set_updating(self):
         self._btn.hide()
-        self._progress.setRange(0, 0)  # indeterminate until we get percentage
+        self._progress.setRange(0, 0)
         self._progress.show()
 
     def set_progress(self, pct: int):
-        """Switch to determinate progress and set percentage (0-100)."""
         self._progress.setRange(0, 100)
         self._progress.setValue(pct)
 
     def set_done(self, success: bool):
         self._progress.hide()
-        self._status.setText("✓" if success else "✗")
-        self._status.setStyleSheet(
-            "color: #4caf50; font-size: 16px;" if success
-            else "color: #e53935; font-size: 16px;")
-        self._status.show()
+        if success:
+            # Dissolve the row after a short delay
+            QTimer.singleShot(400, self._dissolve)
+        else:
+            self._status.setText("✗")
+            self._status.setStyleSheet("color: #e53935; font-size: 16px;")
+            self._status.show()
+
+    def _dissolve(self):
+        self.hide()
+        p = self.parent()
+        if p and hasattr(p, "_on_row_hidden"):
+            p._on_row_hidden(self)
+        self.deleteLater()
 
 
 # ── Section card ──────────────────────────────────────────────────────────────
@@ -183,7 +191,7 @@ class UpdateSection(QFrame):
         super().__init__(parent)
         self._packages = packages
         self._rows: list[PackageUpdateRow] = []
-        self._row_handler = None  # callable(row, pkg) set by page
+        self._row_handler = None
         self.setObjectName("card")
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
@@ -206,7 +214,7 @@ class UpdateSection(QFrame):
         vl.addSpacing(4)
 
         for i, pkg in enumerate(packages):
-            row = PackageUpdateRow(pkg, show_icon=show_icons)
+            row = PackageUpdateRow(pkg, show_icon=show_icons, parent=self)
             row.update_clicked.connect(
                 lambda p, r=row: self._on_row_clicked(r, p))
             vl.addWidget(row)
@@ -218,8 +226,11 @@ class UpdateSection(QFrame):
                 vl.addWidget(sep)
 
     def set_row_handler(self, handler):
-        """Register a callable(row, pkg) invoked when a single row Update is clicked."""
         self._row_handler = handler
+
+    def rows_with_pkgs(self) -> list[tuple]:
+        """Return [(row, pkg), ...] for use in sequential update queue."""
+        return list(zip(self._rows, self._packages))
 
     def _on_row_clicked(self, row: PackageUpdateRow, pkg: dict):
         row.set_updating()
@@ -227,27 +238,24 @@ class UpdateSection(QFrame):
             self._row_handler(row, pkg)
 
     def _on_update_all_clicked(self):
-        for row in self._rows:
-            row.set_updating()
         self.update_all_clicked.emit(self._packages)
+
+    def _on_row_hidden(self, row: PackageUpdateRow):
+        """Called by a row after it dissolves. Hide section when all rows gone."""
+        visible = [r for r in self._rows if r.isVisible()]
+        if not visible:
+            self.hide()
+            self.deleteLater()
 
     def set_all_updating(self):
         self._update_all_btn.setEnabled(False)
         self._update_all_btn.setText("Updating…")
-        for row in self._rows:
-            row.set_updating()
-
-    def set_all_done(self, success: bool):
-        self._update_all_btn.hide()
-        for row in self._rows:
-            row.set_done(success)
 
 
 # ── OS Image card ─────────────────────────────────────────────────────────────
 
 class ImageUpdateCard(QFrame):
     update_clicked = pyqtSignal()
-    rollback_clicked = pyqtSignal()
 
     def __init__(self, info: dict, parent=None):
         super().__init__(parent)
@@ -314,18 +322,11 @@ class ImageUpdateCard(QFrame):
         self._status_lbl.hide()
         row_hl.addWidget(self._status_lbl)
 
-        btn_col = QVBoxLayout()
-        btn_col.setSpacing(4)
         self._update_btn = QPushButton(
             "Update" if update_type == "switch" else "Apply Hotfix")
         self._update_btn.setFixedWidth(110)
         self._update_btn.clicked.connect(self.update_clicked)
-        btn_col.addWidget(self._update_btn)
-        rollback_btn = QPushButton("Rollback")
-        rollback_btn.setFixedWidth(110)
-        rollback_btn.clicked.connect(self.rollback_clicked)
-        btn_col.addWidget(rollback_btn)
-        row_hl.addLayout(btn_col)
+        row_hl.addWidget(self._update_btn)
         vl.addLayout(row_hl)
 
     def set_updating(self):
@@ -353,7 +354,6 @@ class UpdatesPage(QWidget):
         super().__init__()
         self._workers: list = []
         self._terminal: TerminalWidget | None = None
-        self._reboot_btn: QPushButton | None = None
         self._image_card: ImageUpdateCard | None = None
         self._image_info: dict = {}
         self._all_sections: list[UpdateSection] = []
@@ -419,6 +419,7 @@ class UpdatesPage(QWidget):
     def load(self, result: dict = None):
         self._clear()
         self._update_all_btn.hide()
+        self._overall_bar.hide()
         if result is not None:
             self._render(result)
         else:
@@ -450,8 +451,8 @@ class UpdatesPage(QWidget):
             except Exception:
                 return False, {}
 
-        _, pkgs          = _check("check")
-        _, fps           = _check("check-flatpak")
+        _, pkgs             = _check("check")
+        _, fps              = _check("check-flatpak")
         img_avail, img_info = _check_image()
 
         return {
@@ -477,7 +478,6 @@ class UpdatesPage(QWidget):
         total     = result.get("total", 0)
         self._image_info = img_info
 
-        # ── Empty state ───────────────────────────────────────────────────────
         if total == 0:
             self._vl.addStretch()
             up_lbl = QLabel("✓  Fully up to date")
@@ -495,251 +495,239 @@ class UpdatesPage(QWidget):
 
         self._update_all_btn.show()
 
-        # ── Group 1: Applications (GUI RPMs + Flatpak apps + AppImages merged) ─
         gui_pkgs = [p for p in pkgs if p.get("gui")]
         fp_apps  = [dict(p, is_flatpak=True) for p in fps if not p.get("runtime")]
         ai_apps  = [dict(a, is_appimage=True) for a in ais]
         app_group = gui_pkgs + fp_apps + ai_apps
         if app_group:
             sec = UpdateSection("Applications", app_group, show_icons=True)
-            sec.update_all_clicked.connect(self._on_app_update)
+            sec.update_all_clicked.connect(
+                lambda _: self._run_section_update(sec))
             sec.set_row_handler(self._on_single_row_update)
             self._vl.addWidget(sec)
             self._all_sections.append(sec)
 
-        # ── Group 2: Add-ons (Flatpak runtimes/extensions) ────────────────────
         fp_runtimes = [dict(p, is_flatpak=True) for p in fps if p.get("runtime")]
         if fp_runtimes:
             sec = UpdateSection("Add-ons", fp_runtimes)
-            sec.update_all_clicked.connect(self._do_fp_update)
+            sec.update_all_clicked.connect(
+                lambda _: self._run_section_update(sec))
             sec.set_row_handler(self._on_single_row_update)
             self._vl.addWidget(sec)
             self._all_sections.append(sec)
 
-        # ── Group 3: System Dependencies (non-GUI overlay RPMs) ───────────────
         sys_pkgs = [p for p in pkgs if not p.get("gui")]
         if sys_pkgs:
             sec = UpdateSection("System Dependencies", sys_pkgs)
-            sec.update_all_clicked.connect(self._do_pkg_update)
+            sec.update_all_clicked.connect(
+                lambda _: self._run_section_update(sec))
             sec.set_row_handler(self._on_single_row_update)
             self._vl.addWidget(sec)
             self._all_sections.append(sec)
 
-        # ── Group 4: OS Image ─────────────────────────────────────────────────
         if img_avail:
             self._image_card = ImageUpdateCard(img_info)
             self._image_card.update_clicked.connect(self._do_image_update)
-            self._image_card.rollback_clicked.connect(self._do_rollback)
             self._vl.addWidget(self._image_card)
 
-        # Terminal (hidden until update starts)
-        self._terminal = TerminalWidget()
-        self._terminal.hide()
-        self._vl.addWidget(self._terminal)
-
-        # Reboot button (shown after image update staged)
-        self._reboot_btn = QPushButton("🔄  Reboot to Apply")
-        self._reboot_btn.setFixedWidth(180)
-        self._reboot_btn.hide()
-        self._reboot_btn.clicked.connect(upd.schedule_reboot)
-        self._vl.addWidget(self._reboot_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         self._vl.addStretch()
 
-    # ── Update actions ────────────────────────────────────────────────────────
+    # ── Sequential update engine ──────────────────────────────────────────────
 
-    def _show_terminal(self):
-        if self._terminal:
-            if not self._terminal.isVisible():
-                self._terminal.clear()
-            self._terminal.show()
+    def _run_step_sequence(self, steps: list, on_complete):
+        """Run a flat list of callables sequentially.
+        Each callable receives a done(success: bool) callback.
+        """
+        if not steps:
+            on_complete()
+            return
+        step, remaining = steps[0], steps[1:]
 
-    def _on_single_row_update(self, row, pkg: dict):
-        """Handle a single-row Update button click with per-row progress."""
-        self._show_terminal()
-        if pkg.get("is_appimage"):
-            app_id  = pkg.get("id", "")
-            dl_url  = pkg.get("download_url", "")
-            if not app_id or not dl_url:
-                row.set_done(False)
-                return
-            from backend import appimages as _aim
+        def after(success):
+            QTimer.singleShot(250, lambda: self._run_step_sequence(remaining, on_complete))
 
-            def _line_handler(line, _row=row):
-                if line.startswith("DOWNLOAD:"):
-                    try:
-                        _row.set_progress(int(line.split(":")[1]))
-                    except ValueError:
-                        pass
-                else:
-                    self._terminal.append_line(line)
-
-            def _ai_done(code, _row=row, _name=pkg.get("name", app_id)):
-                _row.set_done(code == 0)
-                if self._terminal:
-                    self._terminal.append_line(
-                        f"\n✓ {_name} updated." if code == 0
-                        else f"\n✗ {_name} update failed (exit {code}).")
-
-            w = StreamWorker(
-                lambda _id=app_id, _url=dl_url:
-                    _aim.update_appimage_stream(_id, _url))
-            w.line.connect(_line_handler)
-            w.done.connect(_ai_done)
-            w.start()
-            self._workers.append(w)
-        elif pkg.get("is_flatpak"):
-            app_id = pkg.get("app_id") or pkg.get("id", "")
-            name   = pkg.get("name", app_id)
-
-            def _fp_line(line, _row=row):
-                pct = _parse_flatpak_progress(line)
-                if pct is not None:
-                    _row.set_progress(pct)
-                if self._terminal:
-                    self._terminal.append_line(line)
-
-            def _fp_done(code, _row=row, _name=name):
-                _row.set_done(code == 0)
-                if self._terminal:
-                    self._terminal.append_line(
-                        f"\n✓ {_name} updated." if code == 0
-                        else f"\n✗ {_name} update failed (exit {code}).")
-
-            w = StreamWorker(lambda _id=app_id: flatpak.update_flatpak_stream(_id))
-            w.line.connect(_fp_line)
-            w.done.connect(_fp_done)
-            w.start()
-            self._workers.append(w)
-        else:
-            # RPM — run full package upgrade (no single-pkg stream)
-            def _rpm_line(line, _row=row):
-                pct = _parse_dnf_progress(line)
-                if pct is not None:
-                    _row.set_progress(pct)
-                if self._terminal:
-                    self._terminal.append_line(line)
-
-            def _rpm_done(code, _row=row):
-                _row.set_done(code == 0)
-                if self._terminal:
-                    self._terminal.append_line(
-                        "\n✓ Package updated." if code == 0
-                        else f"\n✗ Update failed (exit {code}).")
-
-            w = StreamWorker(upd.upgrade_packages_stream)
-            w.line.connect(_rpm_line)
-            w.done.connect(_rpm_done)
-            w.start()
-            self._workers.append(w)
-
-    def _on_app_update(self, pkg_list: list):
-        """Mixed list of GUI RPMs + Flatpaks + AppImages — split and run each."""
-        rpms = [p for p in pkg_list
-                if not p.get("is_flatpak") and not p.get("is_appimage")]
-        fps  = [p for p in pkg_list if p.get("is_flatpak")]
-        ais  = [p for p in pkg_list if p.get("is_appimage")]
-        self._show_terminal()
-        if rpms:
-            w = StreamWorker(upd.upgrade_packages_stream)
-            w.line.connect(self._terminal.append_line)
-            w.done.connect(lambda c: self._terminal.append_line(
-                "\n✓ Packages updated." if c == 0 else f"\n✗ Failed (exit {c})."))
-            w.start()
-            self._workers.append(w)
-        if fps:
-            w = StreamWorker(flatpak.update_all_flatpaks_stream)
-            w.line.connect(self._terminal.append_line)
-            w.done.connect(lambda c: self._terminal.append_line(
-                "\n✓ Flatpaks updated." if c == 0 else f"\n✗ Failed (exit {c})."))
-            w.start()
-            self._workers.append(w)
-        from backend import appimages as _aim
-        for ai in ais:
-            app_id = ai.get("id", "")
-            dl_url = ai.get("download_url", "")
-            if not app_id or not dl_url:
-                continue
-            w = StreamWorker(
-                lambda _id=app_id, _url=dl_url:
-                    _aim.update_appimage_stream(_id, _url))
-            w.line.connect(self._terminal.append_line)
-            w.done.connect(lambda c, n=ai.get("name", app_id):
-                self._terminal.append_line(
-                    f"\n✓ {n} updated." if c == 0
-                    else f"\n✗ {n} update failed (exit {c})."))
-            w.start()
-            self._workers.append(w)
-
-    def _do_pkg_update(self, pkg_list: list):
-        self._show_terminal()
-        w = StreamWorker(upd.upgrade_packages_stream)
-        w.line.connect(self._terminal.append_line)
-        w.done.connect(lambda c: self._terminal.append_line(
-            "\n✓ Packages updated." if c == 0 else f"\n✗ Failed (exit {c})."))
-        w.start()
-        self._workers.append(w)
-
-    def _do_fp_update(self, fp_list: list):
-        self._show_terminal()
-        w = StreamWorker(flatpak.update_all_flatpaks_stream)
-        w.line.connect(self._terminal.append_line)
-        w.done.connect(lambda c: self._terminal.append_line(
-            "\n✓ Flatpaks updated." if c == 0 else f"\n✗ Failed (exit {c})."))
-        w.start()
-        self._workers.append(w)
+        step(after)
 
     def _do_update_all(self):
-        self._show_terminal()
-        for sec in self._all_sections:
-            sec.set_all_updating()
         self._update_all_btn.hide()
         self._overall_bar.setRange(0, 0)
         self._overall_bar.show()
-        w = StreamWorker(self._run_all_updates_stream)
-        w.line.connect(self._terminal.append_line)
-        w.done.connect(self._all_updates_done)
+
+        for sec in self._all_sections:
+            sec.set_all_updating()
+
+        # Collect all tasks grouped by type — RPMs batch, then fps/ais one-by-one
+        rpm_rows, fp_tasks, ai_tasks = [], [], []
+        for sec in self._all_sections:
+            for row, pkg in sec.rows_with_pkgs():
+                if pkg.get("is_appimage"):
+                    ai_tasks.append((row, pkg))
+                elif pkg.get("is_flatpak"):
+                    fp_tasks.append((row, pkg))
+                else:
+                    rpm_rows.append((row, pkg))
+
+        steps = []
+        if rpm_rows:
+            steps.append(lambda cb, _r=rpm_rows: self._run_rpm_batch(_r, cb))
+        for row, pkg in fp_tasks:
+            steps.append(lambda cb, r=row, p=pkg: self._run_flatpak_update(r, p, cb))
+        for row, pkg in ai_tasks:
+            steps.append(lambda cb, r=row, p=pkg: self._run_appimage_update(r, p, cb))
+
+        def on_apps_done():
+            self._overall_bar.hide()
+            if self._image_card:
+                # Image update always runs last
+                self._do_image_update()
+            else:
+                QTimer.singleShot(600, lambda: self.load(None))
+
+        self._run_step_sequence(steps, on_apps_done)
+
+    def _run_section_update(self, sec: "UpdateSection"):
+        """Update All within a single section — sequential, same engine."""
+        sec.set_all_updating()
+        rpm_rows, fp_tasks, ai_tasks = [], [], []
+        for row, pkg in sec.rows_with_pkgs():
+            if pkg.get("is_appimage"):
+                ai_tasks.append((row, pkg))
+            elif pkg.get("is_flatpak"):
+                fp_tasks.append((row, pkg))
+            else:
+                rpm_rows.append((row, pkg))
+
+        steps = []
+        if rpm_rows:
+            steps.append(lambda cb, _r=rpm_rows: self._run_rpm_batch(_r, cb))
+        for row, pkg in fp_tasks:
+            steps.append(lambda cb, r=row, p=pkg: self._run_flatpak_update(r, p, cb))
+        for row, pkg in ai_tasks:
+            steps.append(lambda cb, r=row, p=pkg: self._run_appimage_update(r, p, cb))
+
+        self._run_step_sequence(steps, lambda: None)
+
+    def _on_single_row_update(self, row: PackageUpdateRow, pkg: dict):
+        """Single-row Update button — reuse the same helpers."""
+        if pkg.get("is_appimage"):
+            self._run_appimage_update(row, pkg, lambda _: None)
+        elif pkg.get("is_flatpak"):
+            self._run_flatpak_update(row, pkg, lambda _: None)
+        else:
+            self._run_rpm_batch([(row, pkg)], lambda _: None)
+
+    # ── Per-type update helpers ───────────────────────────────────────────────
+
+    def _run_rpm_batch(self, rpm_rows: list, on_done):
+        """Run a single dnf upgrade for all RPM rows together."""
+        for row, _ in rpm_rows:
+            row.set_updating()
+        buf = []
+
+        def _line(line):
+            pct = _parse_dnf_progress(line)
+            if pct is not None:
+                for row, _ in rpm_rows:
+                    row.set_progress(pct)
+            buf.append(line)
+
+        def _done(code):
+            success = code == 0
+            for row, _ in rpm_rows:
+                row.set_done(success)
+            if not success:
+                self._show_error_in_terminal("RPM packages", code, buf)
+            on_done(success)
+
+        w = StreamWorker(upd.upgrade_packages_stream)
+        w.line.connect(_line)
+        w.done.connect(_done)
         w.start()
         self._workers.append(w)
 
-    def _all_updates_done(self, code: int):
-        self._overall_bar.hide()
-        if self._terminal:
-            self._terminal.append_line(
-                "\n✓ All updates complete." if code == 0
-                else f"\n✗ Some updates failed (exit {code}).")
-        for sec in self._all_sections:
-            sec.set_all_done(code == 0)
+    def _run_flatpak_update(self, row: PackageUpdateRow, pkg: dict, on_done):
+        app_id = pkg.get("app_id") or pkg.get("id", "")
+        name   = pkg.get("name", app_id)
+        row.set_updating()
+        buf = []
 
-    def _run_all_updates_stream(self):
-        yield from upd.upgrade_packages_stream()
-        yield from flatpak.update_all_flatpaks_stream()
-        # AppImage updates — userspace, no sudo
-        try:
-            from backend import appimages as _aim
-            for ai_upd in (self._last_result or {}).get("appimages", []):
-                app_id = ai_upd.get("id", "")
-                dl_url = ai_upd.get("download_url", "")
-                if app_id and dl_url:
-                    for line in _aim.update_appimage_stream(app_id, dl_url):
-                        # Skip raw progress markers — Update All uses indeterminate bar
-                        if not line.startswith("DOWNLOAD:"):
-                            yield line
-        except Exception as e:
-            yield f"AppImage update error: {e}"
-        yield "__done__0"
+        def _line(line):
+            pct = _parse_flatpak_progress(line)
+            if pct is not None:
+                row.set_progress(pct)
+            buf.append(line)
+
+        def _done(code):
+            success = code == 0
+            row.set_done(success)
+            if not success:
+                self._show_error_in_terminal(name, code, buf)
+            on_done(success)
+
+        w = StreamWorker(lambda _id=app_id: flatpak.update_flatpak_stream(_id))
+        w.line.connect(_line)
+        w.done.connect(_done)
+        w.start()
+        self._workers.append(w)
+
+    def _run_appimage_update(self, row: PackageUpdateRow, pkg: dict, on_done):
+        from backend import appimages as _aim
+        app_id = pkg.get("id", "")
+        dl_url = pkg.get("download_url", "")
+        name   = pkg.get("name", app_id)
+
+        if not app_id or not dl_url:
+            row.set_done(False)
+            on_done(False)
+            return
+
+        row.set_updating()
+        buf = []
+
+        def _line(line):
+            if line.startswith("DOWNLOAD:"):
+                try:
+                    row.set_progress(int(line.split(":")[1]))
+                except ValueError:
+                    pass
+            else:
+                buf.append(line)
+
+        def _done(code):
+            success = code == 0
+            row.set_done(success)
+            if not success:
+                self._show_error_in_terminal(name, code, buf)
+            on_done(success)
+
+        w = StreamWorker(
+            lambda _id=app_id, _url=dl_url: _aim.update_appimage_stream(_id, _url))
+        w.line.connect(_line)
+        w.done.connect(_done)
+        w.start()
+        self._workers.append(w)
+
+    # ── Image update ──────────────────────────────────────────────────────────
 
     def _do_image_update(self):
         if self._image_card:
             self._image_card.set_updating()
-        self._show_terminal()
         info = self._image_info or {}
+        buf  = []
 
         def _img_line(line):
             pct = _parse_bootc_progress(line)
             if pct is not None and self._image_card:
                 self._image_card.set_progress(pct)
-            if self._terminal:
-                self._terminal.append_line(line)
+            buf.append(line)
+
+        def _done(code):
+            if code == 0:
+                self._show_reboot_required()
+            else:
+                if self._image_card:
+                    self._image_card.set_done(False)
+                self._show_error_in_terminal("OS image update", code, buf)
 
         w = StreamWorker(
             upd.upgrade_image_stream,
@@ -748,21 +736,13 @@ class UpdatesPage(QWidget):
             info.get("available", ""),
         )
         w.line.connect(_img_line)
-        w.done.connect(self._image_done)
+        w.done.connect(_done)
         w.start()
         self._workers.append(w)
 
-    def _image_done(self, code: int):
-        if code == 0:
-            self._show_reboot_required()
-        else:
-            if self._image_card:
-                self._image_card.set_done(False)
-            if self._terminal:
-                self._terminal.append_line(f"\n✗ Failed (exit {code}).")
+    # ── Reboot required screen ────────────────────────────────────────────────
 
     def _show_reboot_required(self):
-        """Clear the page and show a centered 'reboot to apply' state."""
         self._clear()
         self._update_all_btn.hide()
         self._overall_bar.hide()
@@ -785,7 +765,9 @@ class UpdatesPage(QWidget):
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._vl.addWidget(title_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        sub_lbl = dimmed(QLabel("The new system image has been downloaded and staged.\nReboot to boot into the updated system."))
+        sub_lbl = dimmed(QLabel(
+            "The new system image has been downloaded and staged.\n"
+            "Reboot to boot into the updated system."))
         sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._vl.addSpacing(8)
         self._vl.addWidget(sub_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -805,19 +787,27 @@ class UpdatesPage(QWidget):
 
         self._vl.addStretch()
 
-    def _do_rollback(self):
-        self._show_terminal()
-        w = StreamWorker(upd.rollback_stream)
-        w.line.connect(self._terminal.append_line)
-        w.done.connect(lambda c: self._terminal.append_line(
-            "\n✓ Rollback staged. Reboot to apply." if c == 0
-            else f"\n✗ Rollback failed (exit {c})."))
-        w.start()
-        self._workers.append(w)
+    # ── Error terminal (lazy) ─────────────────────────────────────────────────
+
+    def _get_or_create_terminal(self) -> TerminalWidget:
+        if self._terminal is None:
+            self._terminal = TerminalWidget()
+            # Insert before the final stretch
+            idx = max(self._vl.count() - 1, 0)
+            self._vl.insertWidget(idx, self._terminal)
+        self._terminal.show()
+        return self._terminal
+
+    def _show_error_in_terminal(self, name: str, code: int, buf: list):
+        term = self._get_or_create_terminal()
+        for line in buf:
+            term.append_line(line)
+        term.append_line(f"\n✗ {name} failed (exit {code}).")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _clear(self):
         self._terminal = None
-        self._reboot_btn = None
         self._image_card = None
         self._image_info = {}
         self._all_sections = []

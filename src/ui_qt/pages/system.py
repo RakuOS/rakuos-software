@@ -21,7 +21,7 @@ import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
     QLabel, QPushButton, QComboBox, QSizePolicy, QStackedWidget,
-    QProgressBar,
+    QProgressBar, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
@@ -389,7 +389,16 @@ class SystemPage(QWidget):
         # ── Image details card ─────────────────────────────────────────────────
         img_card = self._make_card()
         cl = img_card.layout()
-        cl.addWidget(SectionTitle("\U0001f5a5  Booted Image"))
+
+        img_hdr = QHBoxLayout()
+        img_hdr.addWidget(SectionTitle("\U0001f5a5  Booted Image"))
+        img_hdr.addStretch()
+        self._rollback_btn = QPushButton("Rollback")
+        self._rollback_btn.setFixedWidth(100)
+        self._rollback_btn.clicked.connect(self._do_rollback)
+        img_hdr.addWidget(self._rollback_btn)
+        cl.addLayout(img_hdr)
+        cl.addWidget(hline())
 
         nvidia_str = "\U0001f4a0 Yes" if is_nvidia else "No"
         rows = [
@@ -410,6 +419,28 @@ class SystemPage(QWidget):
                 Qt.TextInteractionFlag.TextSelectableByMouse)
             row.addWidget(vl, stretch=1)
             cl.addLayout(row)
+
+        # Rollback progress + log (hidden until rollback triggered)
+        self._rollback_bar = QProgressBar()
+        self._rollback_bar.setRange(0, 0)
+        self._rollback_bar.setFixedHeight(6)
+        self._rollback_bar.setTextVisible(False)
+        self._rollback_bar.setStyleSheet(
+            "QProgressBar { border: none; background: rgba(128,128,128,0.2);"
+            " border-radius: 3px; }"
+            "QProgressBar::chunk { background: #4caf50; border-radius: 3px; }")
+        self._rollback_bar.hide()
+        cl.addWidget(self._rollback_bar)
+
+        self._rollback_log = QLabel("")
+        self._rollback_log.setWordWrap(True)
+        self._rollback_log.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._rollback_log.setStyleSheet(
+            "font-family: monospace; font-size: 11px;"
+            " background: rgba(0,0,0,0.06); padding: 8px; border-radius: 4px;")
+        self._rollback_log.hide()
+        cl.addWidget(self._rollback_log)
 
         self._vl.addWidget(img_card)
 
@@ -456,9 +487,76 @@ class SystemPage(QWidget):
         cl.setSpacing(8)
         return card
 
+    def _do_rollback(self):
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Rollback System Image")
+        dlg.setText("Roll back to the previously booted image?")
+        dlg.setInformativeText(
+            "This will stage the previous image for boot. "
+            "A reboot is required to apply the rollback.")
+        dlg.setIcon(QMessageBox.Icon.Question)
+        dlg.setStandardButtons(
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok)
+        dlg.button(QMessageBox.StandardButton.Ok).setText("Rollback")
+        dlg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if dlg.exec() != QMessageBox.StandardButton.Ok:
+            return
+
+        self._rollback_btn.setEnabled(False)
+        self._rollback_bar.show()
+        self._rollback_log.setText("")
+        self._rollback_log.show()
+        log_lines = []
+
+        def _line(line):
+            log_lines.append(line)
+            self._rollback_log.setText("\n".join(log_lines[-20:]))
+
+        def _done(code):
+            self._rollback_bar.hide()
+            if code == 0:
+                self._rollback_log.setText(
+                    (self._rollback_log.text() or "") +
+                    "\n✓ Rollback staged. Reboot to apply.")
+                reboot_btn = QPushButton("🔄  Reboot to Apply")
+                reboot_btn.setFixedWidth(160)
+                reboot_btn.setStyleSheet(
+                    "QPushButton { background: #4caf50; color: white;"
+                    " border-radius: 4px; font-weight: bold; }"
+                    "QPushButton:hover { background: #43a047; }")
+                reboot_btn.clicked.connect(
+                    lambda: subprocess.Popen(["systemctl", "reboot"]))
+                # Insert after the log
+                idx = self._vl.indexOf(self._rollback_log.parent())
+                self._vl.insertWidget(idx + 1 if idx >= 0 else self._vl.count(),
+                                      reboot_btn)
+            else:
+                self._rollback_log.setText(
+                    (self._rollback_log.text() or "") +
+                    f"\n✗ Rollback failed (exit {code}).")
+                self._rollback_btn.setEnabled(True)
+
+        w = StreamWorker(updates.rollback_stream)
+        w.line.connect(_line)
+        w.done.connect(_done)
+        w.start()
+        self._workers.append(w)
+
     def _reset_overlay(self):
-        subprocess.Popen(
-            ["sudo", "/usr/libexec/rakuos/rakuos-reset-overlay", "--confirm"])
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Reset Overlay")
+        dlg.setText("Reset the system overlay to its original state?")
+        dlg.setInformativeText(
+            "This will remove all overlay-installed packages and restore the "
+            "base image overlay. This action cannot be undone.")
+        dlg.setIcon(QMessageBox.Icon.Warning)
+        dlg.setStandardButtons(
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok)
+        dlg.button(QMessageBox.StandardButton.Ok).setText("Reset Overlay")
+        dlg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if dlg.exec() != QMessageBox.StandardButton.Ok:
+            return
+        subprocess.Popen(["rakuos", "reset-overlay", "--confirm"])
 
     def _clear(self):
         while self._vl.count():

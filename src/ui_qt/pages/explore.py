@@ -149,6 +149,7 @@ class SubcatTile(QFrame):
 class ExplorePage(QWidget):
     app_clicked    = pyqtSignal(dict)
     subcat_clicked = pyqtSignal(str, str)   # emitted when user picks a subcat tile
+    back_clicked   = pyqtSignal(str, str)   # emitted when back button pressed: (parent_cat, parent_label)
 
     # How many top apps to show below subcat tiles
     TOP_APPS_LIMIT = 12
@@ -157,8 +158,11 @@ class ExplorePage(QWidget):
         super().__init__()
         self._offset = self._total = 0
         self._loading = False
-        self._current_cat   = ""
-        self._current_label = ""
+        self._current_cat    = ""
+        self._current_label  = ""
+        self._parent_cat     = ""   # top-level cat when browsing a subcategory
+        self._parent_label   = ""   # display label for the parent category
+        self._back_btn       = None # back button widget, removed on navigation
         self._workers: list[Worker] = []
 
         outer = QVBoxLayout(self)
@@ -205,14 +209,19 @@ class ExplorePage(QWidget):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load_category(self, cat: str, label: str = "",
-                      subcats: list | None = None):
+                      subcats: list | None = None,
+                      parent_cat: str = "", parent_label: str = ""):
         """
         subcats: list of (label, cat) pairs from CATEGORY_TREE.
         If provided → show subcat browser + top apps below.
         If None/empty → show app grid directly.
+        parent_cat/parent_label: top-level category when cat is a subcategory —
+          used to filter bleed and show a back button.
         """
         self._current_cat   = cat
         self._current_label = label
+        self._parent_cat    = parent_cat
+        self._parent_label  = parent_label
         self._title_lbl.setText(label)
         self._scroll.verticalScrollBar().setValue(0)
 
@@ -234,6 +243,7 @@ class ExplorePage(QWidget):
 
     def _show_subcats(self, subcats: list):
         self._abort_workers()
+        self._remove_back_btn()
         self._grid.hide()
         self._grid.clear()
         self._top_section.hide()
@@ -317,10 +327,30 @@ class ExplorePage(QWidget):
 
         self._top_section.show()
 
+    def _remove_back_btn(self):
+        if self._back_btn is not None:
+            self._back_btn.hide()
+            self._back_btn.deleteLater()
+            self._back_btn = None
+
     def _show_app_grid(self):
         self._abort_workers()
+        self._remove_back_btn()
         self._subcat_widget.hide()
         self._top_section.hide()
+
+        # Back button — only shown when viewing a subcategory
+        if self._parent_cat:
+            from PyQt6.QtWidgets import QPushButton
+            back_label = f"← {self._parent_label}" if self._parent_label else "← Back"
+            self._back_btn = QPushButton(back_label)
+            self._back_btn.setFlat(True)
+            self._back_btn.setStyleSheet("color: palette(highlight); font-size: 12px;")
+            self._back_btn.clicked.connect(
+                lambda: self.back_clicked.emit(self._parent_cat, self._parent_label))
+            # Insert above the title label (index 0)
+            self._vl.insertWidget(0, self._back_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
         self._grid.show()
         self._offset = self._total = 0
         self._loading = False
@@ -334,7 +364,8 @@ class ExplorePage(QWidget):
         if self._loading or (self._offset > 0 and self._offset >= self._total):
             return
         self._loading = True
-        w = Worker(packages.get_by_category, self._current_cat, 40, self._offset, "all")
+        w = Worker(packages.get_by_category,
+                   self._current_cat, 40, self._offset, "all", self._parent_cat)
         w.result.connect(self._on_apps)
         w.start()
         self._workers.append(w)

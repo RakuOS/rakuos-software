@@ -333,6 +333,7 @@ class MainWindow(QMainWindow):
         self._home           = HomePage()
         self._explore        = ExplorePage()
         self._explore.subcat_clicked.connect(self._on_subcat)
+        self._explore.back_clicked.connect(self._on_category)
         self._search_p       = SearchPage()
         self._installed      = InstalledPage()
         self._updates        = UpdatesPage()
@@ -390,8 +391,9 @@ class MainWindow(QMainWindow):
             self._daemon._reschedule)
 
     def closeEvent(self, event):
-        """Hide to tray instead of quitting."""
+        """Hide to tray instead of quitting. Reset to Home so next open is fresh."""
         event.ignore()
+        self.navigate("home")
         self.hide()
 
     def _on_daemon_refresh_home(self, result: dict):
@@ -478,7 +480,16 @@ class MainWindow(QMainWindow):
 
     def _on_subcat(self, cat: str, label: str):
         """Called when user clicks a subcategory tile inside explore."""
-        self._explore.load_category(cat, label, subcats=None)
+        parent_cat = ""
+        parent_label = ""
+        for top_label, top_cat, subs in CATEGORY_TREE:
+            if any(sc == cat for _, sc in subs):
+                parent_cat = top_cat
+                parent_label = top_label
+                break
+        self._explore.load_category(
+            cat, label, subcats=None,
+            parent_cat=parent_cat, parent_label=parent_label)
 
     def _show_page(self, widget):
         """Switch to a page widget."""

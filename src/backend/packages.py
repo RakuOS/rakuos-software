@@ -538,6 +538,12 @@ def _parse_component(comp, source: str = "native") -> Optional[dict]:
             pkg_name = raw_pkg
             result_extra = {}
 
+    # Keywords
+    keywords = []
+    kw_el = comp.find("keywords")
+    if kw_el is not None:
+        keywords = [k.text.strip() for k in kw_el.findall("keyword") if k.text]
+
     # Project URL
     url = ""
     for url_el in comp.findall("url"):
@@ -557,6 +563,7 @@ def _parse_component(comp, source: str = "native") -> Optional[dict]:
         "summary": summary,
         "description": description,
         "categories": categories,
+        "keywords": keywords,
         "icon": icon,
         "screenshots": screenshots,
         "pkg_name": pkg_name,
@@ -840,30 +847,69 @@ def search_dnf(query: str, limit: int = 20) -> list[dict]:
 
 
 def search_packages(query: str, limit: int = 40) -> list[dict]:
-    """Search AppStream data by name/summary, supplemented by DNF metadata."""
+    """Search AppStream data by name/summary/id/keywords, supplemented by DNF.
+
+    Results are ranked by relevance:
+      6 — name starts with query (or exact match)
+      5 — name contains query
+      4 — pkg_name or app id contains query
+      3 — summary contains query
+      2 — any keyword contains query
+    """
     apps = _load_appstream()
-    query_lower = query.lower()
-    results = []
+    q = query.lower()
+    scored = []
     for app in apps.values():
-        if (query_lower in app["name"].lower() or
-                query_lower in app["summary"].lower() or
-                query_lower in app["pkg_name"].lower()):
-            results.append(_enrich_installed(app))
-        if len(results) >= limit:
-            break
+        name_lc    = app.get("name", "").lower()
+        summary_lc = app.get("summary", "").lower()
+        pkg_lc     = app.get("pkg_name", "").lower()
+        id_lc      = app.get("id", "").lower()
+        keywords   = [k.lower() for k in app.get("keywords", [])]
+
+        if name_lc.startswith(q):
+            score = 6
+        elif q in name_lc:
+            score = 5
+        elif q in pkg_lc or q in id_lc:
+            score = 4
+        elif q in summary_lc:
+            score = 3
+        elif any(q in kw for kw in keywords):
+            score = 2
+        else:
+            continue
+
+        scored.append((score, app))
+
+    scored.sort(key=lambda x: -x[0])
+    results = [_enrich_installed(app) for _, app in scored[:limit]]
+
     # Supplement with DNF for packages not in AppStream
     results += search_dnf(query, limit=20)
     return results
 
 
-def get_by_category(category: str, limit: int = 40, offset: int = 0, source: str = "all") -> dict:
+def get_by_category(category: str, limit: int = 40, offset: int = 0,
+                    source: str = "all", parent_cat: str = "") -> dict:
+    """Return apps matching category.
+
+    When parent_cat is supplied (subcategory browsing) the app must have BOTH
+    the subcategory AND the parent top-level category in its categories list,
+    preventing bleed from unrelated top-level categories.
+    """
     apps = _load_appstream()
     raw = []
+    cat_lc    = category.lower()
+    parent_lc = parent_cat.lower() if parent_cat else ""
     for app in apps.values():
         if source != "all" and app["source"] != source:
             continue
-        if any(category.lower() in c.lower() for c in app["categories"]):
-            raw.append(app)
+        cats_lc = [c.lower() for c in app["categories"]]
+        if cat_lc not in cats_lc:
+            continue
+        if parent_lc and parent_lc not in cats_lc:
+            continue
+        raw.append(app)
 
     # Deduplicate by name+source — keep highest pkg_name version
     seen: dict = {}
