@@ -183,6 +183,8 @@ def _get_remove_cmd(pkg_name: str) -> list[str]:
 PACKAGES_LIST = Path("/var/lib/rakuos/packages.list")
 
 APPSTREAM_DIRS = [
+    # RakuOS custom appstream entries (highest priority — loaded first)
+    ("/usr/share/rakuos/appstream/data", "native"),
     ("/usr/share/swcatalog/xml", "native"),
     ("/usr/share/app-info/xmls", "native"),
     ("/var/cache/app-info/xmls", "native"),
@@ -190,6 +192,8 @@ APPSTREAM_DIRS = [
 ]
 
 ICON_DIRS = [
+    # RakuOS custom icons (checked first)
+    "/usr/share/rakuos/appstream/icons",
     "/usr/share/swcatalog/icons/fedora/64x64",
     "/usr/share/swcatalog/icons/fedora/128x128",
     "/usr/share/swcatalog/icons/rpmfusion-free-43/64x64",

@@ -372,7 +372,7 @@ class AppDetailPage(QWidget):
         import logging
         logging.debug("load_app: id=%r pkg_name=%r name=%r source=%r",
                       app.get("id"), app.get("pkg_name"), app.get("name"), app.get("source"))
-        self._native = self._flatpak_app = None
+        self._native = self._flatpak_app = self._selected_app = None
         self._terminal.reset()
         self._carousel.clear()
         self._clear_action_widgets()
@@ -383,7 +383,8 @@ class AppDetailPage(QWidget):
         self._reviews_head.hide()
         self._write_review_btn.hide()
         self._addons_btn.hide()
-        self._addons = []  # reset stored addons
+        self._addons = []
+        self._all_addons = []
         self._review_page = 0
         self._review_data = []
         self._rev_prev_btn.hide()
@@ -573,11 +574,13 @@ class AppDetailPage(QWidget):
         self._render_info_block(self._native, self._flatpak_app)
         self._render_cards(self._native, self._flatpak_app)
 
-        # Fire a second worker to fetch version/size/license (may need repoquery)
-        app_for_detail = self._native or self._flatpak_app
-        if app_for_detail and not app_for_detail.get("local_rpm") \
-                and not app_for_detail.get("local_flatpak") \
-                and not app_for_detail.get("local_flatpakref"):
+        # Fire background workers to fetch version/size/license for each source
+        for app_for_detail in (self._native, self._flatpak_app):
+            if not app_for_detail:
+                continue
+            if app_for_detail.get("local_rpm") or app_for_detail.get("local_flatpak") \
+                    or app_for_detail.get("local_flatpakref"):
+                continue
             w = Worker(self._fetch_detail_info, app_for_detail)
             w.result.connect(self._on_detail_info)
             self._workers.append(w)
@@ -609,14 +612,13 @@ class AppDetailPage(QWidget):
 
     @staticmethod
     def _clean_license(raw: str) -> str:
-        """Simplify Fedora SPDX license expressions for display."""
-        # Strip Fedora-specific LicenseRef-Callaway- prefix
-        cleaned = re.sub(r"LicenseRef-Callaway-", "", raw)
-        # Strip version suffixes appended after + e.g. "GPL-2.0-or-later+143.0.4-1.fc43"
-        cleaned = re.sub(r"\+[\d][\w.\-]*", "", cleaned)
-        # Collapse multiple spaces
-        cleaned = re.sub(r"  +", " ", cleaned).strip()
-        return cleaned
+        """Return just the first license from a (potentially compound) SPDX expression."""
+        # Strip Fedora-specific prefix and version suffixes like +143.0.4-1.fc43
+        cleaned = re.sub(r"LicenseRef-(?:Callaway-|Fedora-)", "", raw)
+        cleaned = re.sub(r"\+[\d][\w.\-]*", "", cleaned).strip()
+        # Split on 'and'/'or' (case-insensitive) and parentheses, take the first token
+        first = re.split(r"\s+(?:and|or)\s+|[()]", cleaned, flags=re.IGNORECASE)[0].strip()
+        return first or cleaned
 
     def _render_info_block(self, native: dict | None, fp: dict | None):
         self._clear_layout(self._info_block)
@@ -754,6 +756,12 @@ class AppDetailPage(QWidget):
             self._apply_btn_state(self._action_stack, app)
         if hasattr(self, "_source_btn") and self._source_btn:
             self._source_btn.setText(f"{self._source_label(app)}  ▾")
+        # Use current stored refs (may have been enriched after menu was built)
+        if app.get("source") == "flatpak":
+            self._render_info_block(self._flatpak_app or app, None)
+        else:
+            self._render_info_block(self._native or app, None)
+        self._refresh_addons_btn()
 
     def _on_action_clicked(self):
         """Called when the main Install/Remove button is clicked."""
@@ -1175,20 +1183,30 @@ class AppDetailPage(QWidget):
     # ── Reviews ──────────────────────────────────────────────────────────────
 
     def _fetch_addons(self, app_id: str) -> list[dict]:
-        from backend import packages
-        addons = packages.get_addons_for(app_id)
-        # Enrich installed status
+        from backend import packages as pkg
+        addons = pkg.get_addons_for(app_id)
         for a in addons:
-            from backend import packages as pkg
-            a["installed"] = pkg.is_installed_native(a["pkg_name"]) or                               pkg.is_installed_flatpak(a.get("id", ""))
+            a["installed"] = pkg.is_installed_native(a["pkg_name"]) or \
+                             pkg.is_installed_flatpak(a.get("id", ""))
         return addons
 
     def _on_addons(self, addons: list[dict]):
-        self._addons = addons
-        if not addons:
+        self._all_addons = addons
+        self._refresh_addons_btn()
+
+    def _refresh_addons_btn(self):
+        """Filter stored add-ons by the currently selected source and update the button."""
+        all_addons = getattr(self, "_all_addons", [])
+        selected = getattr(self, "_selected_app", None)
+        if selected:
+            src = selected.get("source", "native")
+            self._addons = [a for a in all_addons if a.get("source", "native") == src]
+        else:
+            self._addons = all_addons
+        if not self._addons:
             self._addons_btn.hide()
             return
-        self._addons_btn.setText(f"🧩  Add-ons  ({len(addons)})")
+        self._addons_btn.setText(f"🧩  Add-ons  ({len(self._addons)})")
         self._addons_btn.show()
 
     def _show_addons_dialog(self):

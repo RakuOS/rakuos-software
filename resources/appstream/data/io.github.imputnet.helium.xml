@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.imputnet.helium</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+
+  <name>Helium</name>
+  <summary>A fast, private browser without Google</summary>
+
+  <description>
+    <p>
+      Helium is a Chromium-based web browser that removes Google services,
+      telemetry, and tracking while preserving full web compatibility.
+      It ships as a drop-in replacement for Chrome with a clean, familiar
+      interface and no background data collection.
+    </p>
+    <ul>
+      <li>Google services and tracking removed at the source level</li>
+      <li>Full Chromium web engine — compatible with all modern sites</li>
+      <li>No sign-in required, no sync to Google accounts</li>
+      <li>Supports Chrome extensions via the Web Store</li>
+      <li>Regular upstream Chromium security updates</li>
+    </ul>
+  </description>
+
+  <categories>
+    <category>Network</category>
+    <category>WebBrowser</category>
+  </categories>
+
+  <keywords>
+    <keyword>browser</keyword>
+    <keyword>web</keyword>
+    <keyword>chromium</keyword>
+    <keyword>chrome</keyword>
+    <keyword>privacy</keyword>
+    <keyword>helium</keyword>
+  </keywords>
+
+  <pkgname>helium</pkgname>
+
+  <icon type="stock">helium</icon>
+
+  <url type="homepage">https://github.com/imputnet/helium</url>
+  <url type="bugtracker">https://github.com/imputnet/helium/issues</url>
+
+  <provides>
+    <binary>helium</binary>
+  </provides>
+
+  <!-- pkg_name used by RakuOS Software Center to match the RPM package -->
+  <launchable type="desktop-id">helium.desktop</launchable>
+
+  <releases>
+    <release version="latest" date="2025-01-01">
+      <description>
+        <p>Latest Helium release from the RakuOS COPR repository.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>
