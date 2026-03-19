@@ -315,6 +315,7 @@ def install(app_id: str) -> tuple[bool, str]:
             "screenshots":   app.get("screenshots", []),
             "custom_css":    app.get("custom_css", ""),
             "session_group": app.get("session_group", ""),
+            "mimetypes":     app.get("mimetypes", []),
             "source":        "webapp",
             "installed":     True,
         }
@@ -390,9 +391,18 @@ def _write_desktop(app: dict, icon_path: str):
     icon = icon_path or "web-browser"
 
     session_group = app.get("session_group", "")
+    mimetypes = app.get("mimetypes", [])
+
     exec_cmd = f"/usr/bin/rakuos-webapp-launcher '{url}' '{name}'"
     if session_group:
         exec_cmd += f" '{session_group}'"
+    # %f passes the file path when launched via "Open With" from file manager
+    if mimetypes:
+        exec_cmd += " %f"
+
+    mime_line = ""
+    if mimetypes:
+        mime_line = "MimeType=" + ";".join(mimetypes) + ";\n"
 
     desktop_content = f"""[Desktop Entry]
 Name={name}
@@ -402,7 +412,7 @@ Icon={icon}
 Terminal=false
 Type=Application
 Categories={cats}
-StartupNotify=true
+{mime_line}StartupNotify=true
 StartupWMClass=rakuos-webapp-{app_id}
 X-RakuOS-WebApp=true
 X-RakuOS-WebApp-ID={app_id}

@@ -13,9 +13,10 @@ if [[ ! -x "$ELECTRON" ]]; then
     exit 1
 fi
 
-URL="${1:?Usage: rakuos-webapp-launcher <url> <name> [session_group]}"
-NAME="${2:?Usage: rakuos-webapp-launcher <url> <name> [session_group]}"
+URL="${1:?Usage: rakuos-webapp-launcher <url> <name> [session_group] [file]}"
+NAME="${2:?Usage: rakuos-webapp-launcher <url> <name> [session_group] [file]}"
 SESSION_GROUP="${3:-}"
+FILE_ARG="${4:-}"
 
 # Sanitise name → app id (must match what main.js produces)
 APP_ID="$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')"
@@ -39,4 +40,5 @@ exec "$ELECTRON" \
     "$URL" \
     "$NAME" \
     "$CUSTOM_CSS" \
-    "$SESSION_GROUP"
+    "$SESSION_GROUP" \
+    "$FILE_ARG"
