@@ -18,6 +18,22 @@ Each catalog JSON:
   "categories":  ["AudioVideo", "Video"],
   "keywords":    ["streaming", "movies", "tv"]
 }
+
+Bundle/suite JSON (optional "apps" array):
+{
+  "id":          "google-workspace",
+  "name":        "Google Workspace",
+  "url":         "https://workspace.google.com",   # hub/portal entry
+  "icon_url":    "https://...",
+  "categories":  ["Office"],
+  "keywords":    ["google", "office", "docs"],
+  "apps": [
+    { "id": "google-docs",   "name": "Google Docs",   "url": "https://docs.google.com",   "icon_url": "https://..." },
+    { "id": "google-sheets", "name": "Google Sheets", "url": "https://sheets.google.com", "icon_url": "https://..." }
+  ]
+}
+Sub-apps inherit categories/keywords/website from parent; override any field locally.
+The parent hub entry is also included if it has its own url/website.
 """
 
 import os
@@ -45,6 +61,52 @@ def _ensure_dirs():
 
 # ── Catalog ───────────────────────────────────────────────────────────────────
 
+def _finalise(entry: dict) -> dict:
+    """Attach runtime fields (source, installed, icon_path, screenshots) to a catalog entry."""
+    entry["source"]    = "webapp"
+    entry["installed"] = is_installed(entry["id"])
+    entry["icon_path"] = _resolve_icon(entry)
+    entry.setdefault("screenshots", [])
+    return entry
+
+
+def _expand_catalog_data(data: dict) -> list[dict]:
+    """
+    Expand a raw catalog dict into one or more app entries.
+
+    - If the dict has no 'apps' key it is returned as-is (single entry).
+    - If it has an 'apps' array each sub-app is merged with inherited parent
+      fields (categories, keywords, website/url), then _finalised.
+    - The parent hub entry is also included when it has its own url/website.
+    """
+    sub_apps = data.get("apps")
+    if not sub_apps:
+        return [_finalise(dict(data))]
+
+    entries = []
+
+    # Parent hub (portal / landing page)
+    if data.get("url") or data.get("website"):
+        hub = {k: v for k, v in data.items() if k != "apps"}
+        entries.append(_finalise(hub))
+
+    # Inherited fields sub-apps receive from parent unless they override
+    inherited = {
+        "categories": data.get("categories", []),
+        "keywords":   data.get("keywords", []),
+        "website":    data.get("website") or data.get("url", ""),
+        "screenshots": data.get("screenshots", []),
+        "custom_css": data.get("custom_css", ""),
+    }
+
+    for sub in sub_apps:
+        entry = dict(inherited)
+        entry.update(sub)          # sub-app fields take priority
+        entries.append(_finalise(entry))
+
+    return entries
+
+
 def get_catalog() -> list[dict]:
     """
     Return all web apps from the system catalog.
@@ -56,11 +118,7 @@ def get_catalog() -> list[dict]:
     for path in sorted(CATALOG_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text())
-            data["source"]      = "webapp"
-            data["installed"]   = is_installed(data["id"])
-            data["icon_path"]   = _resolve_icon(data)   # downloads if needed
-            data.setdefault("screenshots", [])
-            apps.append(data)
+            apps.extend(_expand_catalog_data(data))
         except Exception as e:
             print(f"[webapps] Failed to read {path}: {e}")
     return apps
@@ -75,19 +133,41 @@ def resolve_icon_for(app_id: str) -> str:
 
 
 def get_catalog_by_id(app_id: str) -> dict | None:
-    """Return a single catalog entry by id."""
-    path = CATALOG_DIR / f"{app_id}.json"
-    if not path.exists():
+    """Return a single catalog entry by id, searching bundle sub-apps too."""
+    if not CATALOG_DIR.exists():
         return None
-    try:
-        data = json.loads(path.read_text())
-        data["source"]      = "webapp"
-        data["installed"]   = is_installed(app_id)
-        data["icon_path"]   = _resolve_icon(data)
-        data.setdefault("screenshots", [])
-        return data
-    except Exception:
-        return None
+
+    for path in sorted(CATALOG_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            continue
+
+        # Simple (non-bundle) JSON matching by id
+        if data.get("id") == app_id and not data.get("apps"):
+            return _finalise(dict(data))
+
+        # Bundle: check hub and sub-apps
+        if data.get("apps"):
+            # Hub entry
+            if data.get("id") == app_id:
+                hub = {k: v for k, v in data.items() if k != "apps"}
+                return _finalise(hub)
+            # Sub-apps
+            inherited = {
+                "categories": data.get("categories", []),
+                "keywords":   data.get("keywords", []),
+                "website":    data.get("website") or data.get("url", ""),
+                "screenshots": data.get("screenshots", []),
+                "custom_css": data.get("custom_css", ""),
+            }
+            for sub in data["apps"]:
+                if sub.get("id") == app_id:
+                    entry = dict(inherited)
+                    entry.update(sub)
+                    return _finalise(entry)
+
+    return None
 
 
 def _resolve_icon(app: dict) -> str:
