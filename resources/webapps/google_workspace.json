@@ -14,38 +14,21 @@
       "name": "Google Docs",
       "url": "https://docs.google.com",
       "summary": "Online word processor",
-      "icon_url": "https://sevendex.com/post/wp-content/uploads/2023/07/image-12.png",
-      "mimetypes": [
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/msword",
-        "application/vnd.oasis.opendocument.text",
-        "text/plain"
-      ]
+      "icon_url": "https://sevendex.com/post/wp-content/uploads/2023/07/image-12.png"
     },
     {
       "id": "google-sheets",
       "name": "Google Sheets",
       "url": "https://sheets.google.com",
       "summary": "Online spreadsheet editor",
-      "icon_url": "https://logodix.com/logo/1185805.png",
-      "mimetypes": [
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel",
-        "application/vnd.oasis.opendocument.spreadsheet",
-        "text/csv"
-      ]
+      "icon_url": "https://logodix.com/logo/1185805.png"
     },
     {
       "id": "google-slides",
       "name": "Google Slides",
       "url": "https://slides.google.com",
       "summary": "Online presentation editor",
-      "icon_url": "https://downloadr2.apkmirror.com/wp-content/uploads/2021/05/75/60aef92218a99.png",
-      "mimetypes": [
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/vnd.ms-powerpoint",
-        "application/vnd.oasis.opendocument.presentation"
-      ]
+      "icon_url": "https://downloadr2.apkmirror.com/wp-content/uploads/2021/05/75/60aef92218a99.png"
     },
     {
       "id": "google-gmail",
