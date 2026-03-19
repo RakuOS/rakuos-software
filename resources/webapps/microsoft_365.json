@@ -12,37 +12,37 @@
     {
       "id": "microsoft-word",
       "name": "Microsoft Word",
-      "url": "https://word.office.com",
+      "url": "https://word.cloud.microsoft",
       "summary": "Online word processor",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Microsoft_Office_Word_%282019%E2%80%93present%29.svg/512px-Microsoft_Office_Word_%282019%E2%80%93present%29.svg.png"
+      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/word_16x1.svg"
     },
     {
       "id": "microsoft-excel",
       "name": "Microsoft Excel",
-      "url": "https://excel.office.com",
+      "url": "https://excel..cloud.microsoft",
       "summary": "Online spreadsheet editor",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Microsoft_Office_Excel_%282019%E2%80%93present%29.svg/512px-Microsoft_Office_Excel_%282019%E2%80%93present%29.svg.png"
+      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/excel_16x1.svg"
     },
     {
       "id": "microsoft-powerpoint",
       "name": "Microsoft PowerPoint",
-      "url": "https://powerpoint.office.com",
+      "url": "https://powerpoint.cloud.microsoft",
       "summary": "Online presentation editor",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Microsoft_Office_PowerPoint_%282019%E2%80%93present%29.svg/512px-Microsoft_Office_PowerPoint_%282019%E2%80%93present%29.svg.png"
+      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/powerpoint_16x1.svg"
     },
     {
       "id": "microsoft-onenote",
       "name": "Microsoft OneNote",
-      "url": "https://onenote.com/notebooks",
+      "url": "https://onenote.cloud.microsoft",
       "summary": "Online note-taking app",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/10/Microsoft_Office_OneNote_%282019%E2%80%93present%29.svg/512px-Microsoft_Office_OneNote_%282019%E2%80%93present%29.svg.png"
+      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/onenote_16x1.svg"
     },
     {
       "id": "microsoft-outlook",
       "name": "Microsoft Outlook",
       "url": "https://outlook.live.com",
       "summary": "Email and calendar",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/df/Microsoft_Office_Outlook_%282018%E2%80%93present%29.svg/512px-Microsoft_Office_Outlook_%282018%E2%80%93present%29.svg.png",
+      "icon_url": "https://cdn2.steamgriddb.com/icon_thumb/589ed0f0b009f655512d52bece14827c.png",
       "categories": ["Office", "Network", "Email"]
     },
     {
@@ -50,15 +50,8 @@
       "name": "Microsoft Teams",
       "url": "https://teams.microsoft.com",
       "summary": "Chat, meetings and collaboration",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Microsoft_Office_Teams_%282018%E2%80%93present%29.svg/512px-Microsoft_Office_Teams_%282018%E2%80%93present%29.svg.png",
+      "icon_url": "https://cdn2.steamgriddb.com/icon_thumb/456996a625475cc01fa622ad003b78a9.png",
       "categories": ["Office", "Network", "InstantMessaging"]
-    },
-    {
-      "id": "microsoft-onedrive",
-      "name": "Microsoft OneDrive",
-      "url": "https://onedrive.live.com",
-      "summary": "Cloud file storage and sharing",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Microsoft_Office_OneDrive_%282019%E2%80%93present%29.svg/512px-Microsoft_Office_OneDrive_%282019%E2%80%93present%29.svg.png"
     }
   ]
 }

@@ -5,7 +5,7 @@
   "website": "https://workspace.google.com",
   "summary": "Google's productivity suite",
   "description": "Google Docs, Sheets, Slides, Drive and more — cloud-based productivity tools that work in your browser.",
-  "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/G_Suite_icon_%282019%29.svg/512px-G_Suite_icon_%282019%29.svg.png",
+  "icon_url": "https://freelogopng.com/images/all_img/1657952440google-logo-png-transparent.png",
   "categories": ["Office", "Network"],
   "keywords": ["google", "office", "docs", "sheets", "slides", "drive", "productivity", "workspace"],
   "apps": [
@@ -14,28 +14,21 @@
       "name": "Google Docs",
       "url": "https://docs.google.com",
       "summary": "Online word processor",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/01/Google_Docs_logo_%282014-2020%29.svg/512px-Google_Docs_logo_%282014-2020%29.svg.png"
+      "icon_url": "https://sevendex.com/post/wp-content/uploads/2023/07/image-12.png"
     },
     {
       "id": "google-sheets",
       "name": "Google Sheets",
       "url": "https://sheets.google.com",
       "summary": "Online spreadsheet editor",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/Google_Sheets_logo_%282014-2020%29.svg/512px-Google_Sheets_logo_%282014-2020%29.svg.png"
+      "icon_url": "https://logodix.com/logo/1185805.png"
     },
     {
       "id": "google-slides",
       "name": "Google Slides",
       "url": "https://slides.google.com",
       "summary": "Online presentation editor",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/16/Google_Slides_2020_Logo.svg/512px-Google_Slides_2020_Logo.svg.png"
-    },
-    {
-      "id": "google-drive",
-      "name": "Google Drive",
-      "url": "https://drive.google.com",
-      "summary": "Cloud file storage and sharing",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Google_Drive_icon_%282020%29.svg/512px-Google_Drive_icon_%282020%29.svg.png"
+      "icon_url": "https://downloadr2.apkmirror.com/wp-content/uploads/2021/05/75/60aef92218a99.png"
     },
     {
       "id": "google-gmail",
@@ -50,7 +43,7 @@
       "name": "Google Calendar",
       "url": "https://calendar.google.com",
       "summary": "Online calendar and scheduling",
-      "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a5/Google_Calendar_icon_%282020%29.svg/512px-Google_Calendar_icon_%282020%29.svg.png",
+      "icon_url": "https://static.vecteezy.com/system/resources/previews/022/613/030/original/google-calendar-icon-logo-symbol-free-png.png",
       "categories": ["Office", "Calendar"]
     }
   ]
