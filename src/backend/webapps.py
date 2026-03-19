@@ -102,6 +102,7 @@ def _expand_catalog_data(data: dict) -> list[dict]:
     for sub in sub_apps:
         entry = dict(inherited)
         entry.update(sub)          # sub-app fields take priority
+        entry.setdefault("session_group", data["id"])   # share session with suite
         entries.append(_finalise(entry))
 
     return entries
@@ -165,6 +166,7 @@ def get_catalog_by_id(app_id: str) -> dict | None:
                 if sub.get("id") == app_id:
                     entry = dict(inherited)
                     entry.update(sub)
+                    entry.setdefault("session_group", data["id"])
                     return _finalise(entry)
 
     return None
@@ -310,10 +312,11 @@ def install(app_id: str) -> tuple[bool, str]:
             "icon_path":   icon_path,
             "categories":  app.get("categories", []),
             "keywords":    app.get("keywords", []),
-            "screenshots": app.get("screenshots", []),
-            "custom_css":  app.get("custom_css", ""),
-            "source":      "webapp",
-            "installed":   True,
+            "screenshots":   app.get("screenshots", []),
+            "custom_css":    app.get("custom_css", ""),
+            "session_group": app.get("session_group", ""),
+            "source":        "webapp",
+            "installed":     True,
         }
         (INSTALL_DIR / f"{app_id}.json").write_text(
             json.dumps(installed_data, indent=2))
@@ -386,7 +389,10 @@ def _write_desktop(app: dict, icon_path: str):
     # pick up the downloaded icon without needing a named theme icon
     icon = icon_path or "web-browser"
 
+    session_group = app.get("session_group", "")
     exec_cmd = f"/usr/bin/rakuos-webapp-launcher '{url}' '{name}'"
+    if session_group:
+        exec_cmd += f" '{session_group}'"
 
     desktop_content = f"""[Desktop Entry]
 Name={name}

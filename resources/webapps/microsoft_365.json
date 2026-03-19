@@ -5,7 +5,7 @@
   "website": "https://www.microsoft365.com",
   "summary": "Microsoft's cloud productivity suite",
   "description": "Microsoft 365 brings you Word, Excel, PowerPoint, Outlook, Teams, OneNote and OneDrive — all in your browser with no install required.",
-  "icon_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/44/Microsoft_logo.svg/512px-Microsoft_logo.svg.png",
+  "icon_url": "https://i.pinimg.com/originals/84/95/cf/8495cf770fdcb80355dc940930c0d9a8.png",
   "categories": ["Office", "Network"],
   "keywords": ["microsoft", "office", "365", "word", "excel", "powerpoint", "outlook", "teams", "onedrive", "productivity"],
   "apps": [
@@ -14,28 +14,28 @@
       "name": "Microsoft Word",
       "url": "https://word.cloud.microsoft",
       "summary": "Online word processor",
-      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/word_16x1.svg"
+      "icon_url": "https://cdn2.steamgriddb.com/icon/9759e4afabf043458dd9f1988644ed6b/32/512x512.png"
     },
     {
       "id": "microsoft-excel",
       "name": "Microsoft Excel",
       "url": "https://excel..cloud.microsoft",
       "summary": "Online spreadsheet editor",
-      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/excel_16x1.svg"
+      "icon_url": "https://cdn2.steamgriddb.com/icon/196268d973fe71025e5e9a9b6ef4c6f1/32/512x512.png"
     },
     {
       "id": "microsoft-powerpoint",
       "name": "Microsoft PowerPoint",
       "url": "https://powerpoint.cloud.microsoft",
       "summary": "Online presentation editor",
-      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/powerpoint_16x1.svg"
+      "icon_url": "https://cdn2.steamgriddb.com/icon_thumb/095543c425d38265455b460a8b71ee8f.png"
     },
     {
       "id": "microsoft-onenote",
       "name": "Microsoft OneNote",
       "url": "https://onenote.cloud.microsoft",
       "summary": "Online note-taking app",
-      "icon_url": "https://res.cdn.office.net/files/fabric-cdn-prod_20251117.001/assets/brand-icons/product/svg/onenote_16x1.svg"
+      "icon_url": "https://cdn2.steamgriddb.com/icon_thumb/e2d0a5d90d66be602fa65c0ca51173be.png"
     },
     {
       "id": "microsoft-outlook",
