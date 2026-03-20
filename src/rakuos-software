@@ -24,6 +24,14 @@ _flatpak_file  = None
 _flatpakref    = None
 _appimage_file = None
 
+# Archive suffixes that may contain an AppImage — checked after .appimage
+_APPIMAGE_ARCHIVE_SUFFIXES = (
+    ".zip", ".7z", ".tar",
+    ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
+    ".tar.xz", ".txz", ".tar.zst", ".tzst",
+    ".tar.lz", ".tar.lzma",
+)
+
 for _arg in sys.argv[1:]:
     if _arg.startswith("-") or _arg == "%f":
         continue
@@ -33,6 +41,7 @@ for _arg in sys.argv[1:]:
         _arg = urllib.parse.unquote(_arg[7:])
     if not os.path.isfile(_arg):
         continue
+    _arg_lower = _arg.lower()
     _ext = os.path.splitext(_arg)[1].lower()
     if _ext == ".rpm":
         _rpm_file = _arg
@@ -41,6 +50,9 @@ for _arg in sys.argv[1:]:
     elif _ext == ".flatpakref":
         _flatpakref = _arg
     elif _ext == ".appimage":
+        _appimage_file = _arg
+    elif any(_arg_lower.endswith(s) for s in _APPIMAGE_ARCHIVE_SUFFIXES):
+        # May be an archive containing an AppImage — hand to the AppImage flow
         _appimage_file = _arg
 
 # Debug output so we can see what was detected

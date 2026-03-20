@@ -59,7 +59,10 @@ class AppImageDetailPage(QWidget):
         self._src_path = path
         self._loading = True
         self._clear()
-        self._vl.addWidget(LoadingWidget("Reading AppImage…"))
+        import os as _os
+        _label = "Extracting archive…" if appimages.is_archive(path) \
+                 else "Reading AppImage…"
+        self._vl.addWidget(LoadingWidget(_label))
         w = Worker(lambda: appimages.get_appimage_info_for_display(path))
         w.result.connect(self._on_render_ready)
         w.start()
@@ -95,6 +98,10 @@ class AppImageDetailPage(QWidget):
         self._loading = False
         self._clear()
         self._app_info = info
+        # For archives, get_appimage_info_for_display sets src_path to the
+        # extracted AppImage temp path — use that for the install call.
+        if info.get("src_path"):
+            self._src_path = info["src_path"]
 
         # ── Back button ───────────────────────────────────────────────────────
         back_btn = QPushButton("← Back")

@@ -30,10 +30,12 @@ import json
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import urllib.request
 import urllib.error
 import urllib.parse
+import zipfile
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +65,73 @@ EXTRACT_TMP    = Path(tempfile.gettempdir()) / "rakuos-appimage-extract"
 
 GITHUB_API  = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITLAB_API  = "https://gitlab.com/api/v4/projects/{project}/releases"
+
+
+# Archive formats that may contain an AppImage inside
+_ARCHIVE_SUFFIXES = (
+    ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
+    ".tar.zst", ".tzst", ".tar.lz", ".tar.lzma",
+    ".zip", ".7z", ".tar",
+)
+
+
+def is_archive(path) -> bool:
+    """Return True if path looks like an archive that may contain an AppImage."""
+    name = str(path).lower()
+    return any(name.endswith(s) for s in _ARCHIVE_SUFFIXES)
+
+
+def _find_appimage_in_archive(archive_path: Path) -> Path:
+    """
+    Extract an archive to a temp directory and return the path to the
+    AppImage found inside.  Caller is responsible for cleaning up the
+    returned file's parent temp directory when done.
+
+    Raises FileNotFoundError if no AppImage is found.
+    Raises RuntimeError for unsupported / failed extraction.
+    """
+    tmp_dir = EXTRACT_TMP / f"arc-{archive_path.stem}"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    name = archive_path.name.lower()
+
+    try:
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(tmp_dir)
+
+        elif any(name.endswith(s) for s in
+                 (".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
+                  ".tar.xz", ".txz", ".tar.zst", ".tzst",
+                  ".tar.lz", ".tar.lzma", ".tar")):
+            with tarfile.open(archive_path) as tf:
+                tf.extractall(tmp_dir)
+
+        elif name.endswith(".7z"):
+            r = subprocess.run(
+                ["7z", "x", str(archive_path), f"-o{tmp_dir}"],
+                capture_output=True, timeout=120)
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"7z failed: {r.stderr.decode(errors='replace')}")
+
+        else:
+            raise RuntimeError(f"Unsupported archive format: {archive_path.suffix}")
+
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    # Find AppImage files — pick the largest (usually the main one)
+    found = list(tmp_dir.rglob("*.AppImage")) + list(tmp_dir.rglob("*.appimage"))
+    if not found:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise FileNotFoundError(
+            f"No AppImage found inside {archive_path.name}")
+
+    return max(found, key=lambda p: p.stat().st_size)
 
 
 def _ensure_dirs():
@@ -296,11 +365,24 @@ def is_installed(app_id: str) -> bool:
 def install_appimage(src_path: str) -> tuple[bool, str, dict]:
     """
     Install an AppImage from src_path.
+    Also accepts archives (.zip, .tar.gz, etc.) — the AppImage is extracted
+    from the archive first, then installed normally.
     Returns (success, message, app_info_dict).
     """
     src = Path(src_path)
     if not src.exists():
         return False, f"File not found: {src_path}", {}
+
+    # If an archive was passed, extract the AppImage from it first
+    _arc_tmp = None
+    if is_archive(src):
+        try:
+            extracted = _find_appimage_in_archive(src)
+            _arc_tmp  = extracted.parent   # remember for cleanup
+            src       = extracted
+            src_path  = str(src)
+        except Exception as e:
+            return False, f"Could not extract AppImage from archive: {e}", {}
 
     try:
         _ensure_dirs()
@@ -360,6 +442,11 @@ def install_appimage(src_path: str) -> tuple[bool, str, dict]:
 
     except Exception as e:
         return False, f"Failed to install AppImage: {e}", {}
+
+    finally:
+        # Clean up archive extraction temp dir if we created one
+        if _arc_tmp and _arc_tmp.exists():
+            shutil.rmtree(_arc_tmp, ignore_errors=True)
 
 
 def uninstall_appimage(app_id: str) -> tuple[bool, str]:
@@ -724,25 +811,53 @@ def update_appimage_stream(app_id: str, download_url: str):
 
 def get_appimage_info_for_display(path: str) -> dict:
     """
-    Called when user double-clicks an AppImage.
+    Called when the user opens an AppImage (or an archive containing one).
+    Transparently handles .zip / .tar.gz / etc. by extracting the AppImage first.
     Returns enriched info dict for the detail page.
     """
-    info = extract_appimage_info(path)
-    src  = Path(path)
-    return {
-        "id":           re.sub(r"[^a-z0-9\-]", "-",
-                               info.get("name", src.stem).lower()).strip("-"),
-        "name":         info.get("name") or src.stem,
-        "version":      info.get("version", ""),
-        "summary":      info.get("summary", ""),
-        "description":  info.get("description", ""),
-        "icon_data":    info.get("icon_data"),
-        "icon_ext":     info.get("icon_ext", "png"),
-        "categories":   info.get("categories", []),
-        "update_source": info.get("update_source", "none"),
-        "update_url":   info.get("update_url", ""),
-        "update_pattern": info.get("update_pattern", ""),
-        "source":       "appimage",
-        "installed":    False,
-        "src_path":     str(src),
-    }
+    src      = Path(path)
+    arc_tmp  = None
+
+    if is_archive(src):
+        try:
+            extracted = _find_appimage_in_archive(src)
+            arc_tmp   = extracted.parent
+            actual    = extracted
+        except Exception as e:
+            return {
+                "name":    src.stem,
+                "source":  "appimage",
+                "installed": False,
+                "src_path": str(src),
+                "_error":  str(e),
+            }
+    else:
+        actual = src
+
+    try:
+        info = extract_appimage_info(str(actual))
+        return {
+            "id":             re.sub(r"[^a-z0-9\-]", "-",
+                                     info.get("name", actual.stem).lower()).strip("-"),
+            "name":           info.get("name") or actual.stem,
+            "version":        info.get("version", ""),
+            "summary":        info.get("summary", ""),
+            "description":    info.get("description", ""),
+            "icon_data":      info.get("icon_data"),
+            "icon_ext":       info.get("icon_ext", "png"),
+            "categories":     info.get("categories", []),
+            "update_source":  info.get("update_source", "none"),
+            "update_url":     info.get("update_url", ""),
+            "update_pattern": info.get("update_pattern", ""),
+            "source":         "appimage",
+            "installed":      False,
+            # Store the *actual* AppImage path (which may be inside a temp dir if
+            # extracted from an archive) so install_appimage() can copy it.
+            "src_path":       str(actual),
+            # Also remember the original archive path for display
+            "archive_path":   str(src) if arc_tmp else "",
+        }
+    finally:
+        # Clean up archive extraction temp dir
+        if arc_tmp and arc_tmp.exists():
+            shutil.rmtree(arc_tmp, ignore_errors=True)
