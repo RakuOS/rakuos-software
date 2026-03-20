@@ -204,10 +204,13 @@ ICON_DIRS = [
 
 _appstream_cache: dict = {}
 
-# ── AppStream metadata overrides ──────────────────────────────────────────────
-# Ships at /usr/share/rakuos/appstream-overrides.json
-# Community-contributed fixes for apps with missing/wrong English metadata.
-_OVERRIDES_PATH = "/usr/share/rakuos/appstream-overrides.json"
+# ── AppStream data directory ───────────────────────────────────────────────────
+# Both files ship at /usr/share/rakuos/appstream/ and are sourced from
+# resources/appstream/ in the rakuos-software repo.
+_APPSTREAM_DATA_DIR = "/usr/share/rakuos/appstream"
+_OVERRIDES_PATH     = f"{_APPSTREAM_DATA_DIR}/appstream-overrides.json"
+_FP_TO_RPM_PATH     = f"{_APPSTREAM_DATA_DIR}/flatpak-to-rpm.json"
+
 
 def _load_overrides() -> dict:
     """Load appstream-overrides.json, return dict of app_id → override fields."""
@@ -220,6 +223,20 @@ def _load_overrides() -> dict:
         return {}
     except Exception as e:
         print(f"[packages] overrides load error: {e}")
+        return {}
+
+
+def _load_flatpak_to_rpm() -> dict:
+    """Load flatpak-to-rpm.json, return dict of lowercase flatpak_id → rpm_name."""
+    try:
+        with open(_FP_TO_RPM_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        # Strip comment keys, ensure all keys are lowercase
+        return {k.lower(): v for k, v in data.items() if not k.startswith("_")}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"[packages] flatpak-to-rpm load error: {e}")
         return {}
 
 
@@ -456,7 +473,8 @@ def _load_appstream() -> dict:
 
         # Inject native stubs for known Flatpak→RPM mappings that have no native AppStream entry.
         # Only inject if the RPM actually exists in repos — avoids ghost "installed" entries.
-        for fp_id_lower, rpm_name in _FLATPAK_TO_RPM.items():
+        for fp_id_key, rpm_name in _FLATPAK_TO_RPM.items():
+            fp_id_lower = fp_id_key.lower()
             # Find the matching flatpak entry (case-insensitive id match)
             fp_entry = None
             for key, a in apps.items():
@@ -1026,53 +1044,8 @@ def get_addons_for(app_id: str) -> list[dict]:
     return [item for item in cache.values() if item.get("extends") == app_id]
 
 
-# Known awkward Flatpak ID → RPM name mappings
-_FLATPAK_TO_RPM: dict[str, str] = {
-    "org.mozilla.firefox":            "firefox",
-    "org.mozilla.thunderbird":        "thunderbird",
-    "org.chromium.chromium":          "chromium",
-    "com.google.chrome":              "google-chrome-stable",
-    "com.google.chromedev":           "google-chrome-unstable",
-    "com.google.chromebeta":          "google-chrome-beta",
-    "com.microsoft.Edge":             "microsoft-edge-stable",
-    "com.visualstudio.code":          "code",
-    "org.gnome.evolution":            "evolution",
-    "org.kde.dolphin":                "dolphin",
-    "org.kde.konsole":                "konsole",
-    "org.kde.kate":                   "kate",
-    "org.kde.kwrite":                 "kwrite",
-    "org.kde.okular":                 "okular",
-    "org.kde.gwenview":               "gwenview",
-    "org.kde.spectacle":              "spectacle",
-    "org.kde.ark":                    "ark",
-    "org.kde.kcalc":                  "kcalc",
-    "org.kde.krita":                  "krita",
-    "org.kde.kdenlive":               "kdenlive",
-    "org.gimp.gimp":                  "gimp",
-    "org.inkscape.inkscape":          "inkscape",
-    "org.blender.blender":            "blender",
-    "org.libreoffice.libreoffice":    "libreoffice",
-    "org.videolan.vlc":               "vlc",
-    "org.audacityteam.audacity":      "audacity",
-    "com.obsproject.studio":          "obs-studio",
-    "com.valvesoftware.steam":        "steam",
-    "net.lutris.lutris":              "lutris",
-    "com.discordapp.discord":         "discord",
-    "org.telegram.desktop":           "telegram-desktop",
-    "org.kde.elisa":                  "elisa",
-    "org.gnome.nautilus":             "nautilus",
-    "com.mattjakeman.ExtensionManager":                               "extension-manager",
-    "org.gnome.gedit":                "gedit",
-    "org.gnome.eog":                  "eog",
-    "org.gnome.totem":                "totem",
-    "org.gnome.rhythmbox":            "rhythmbox",
-    "org.gnome.cheese":               "cheese",
-    "org.gnome.shotwell":             "shotwell",
-    "info.cemu.Cemu":                 "cemu",
-    "io.github.ryubing.Ryujinx":      "ryujinx",
-    "com.heroicgameslauncher.hgl":    "heroic-games-launcher-bin",
-    "io.github.Faugus.faugus-launcher":  "faugus-launcher",
-}
+# Flatpak ID → RPM name mappings — loaded from /usr/share/rakuos/appstream/flatpak-to-rpm.json
+_FLATPAK_TO_RPM: dict[str, str] = _load_flatpak_to_rpm()
 
 
 def find_native_counterpart(fp_app: dict) -> dict | None:
