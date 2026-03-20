@@ -244,9 +244,22 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _on_updates_ready(self, result: dict):
-        total = result.get("total", 0)
+        total     = result.get("total", 0)
+        pkg_count = len(result.get("packages", []))
+        fp_count  = len(result.get("flatpak", []))
+        img       = result.get("image_available", False)
+
+        parts = []
+        if pkg_count:
+            parts.append(f"{pkg_count} package{'s' if pkg_count != 1 else ''}")
+        if fp_count:
+            parts.append(f"{fp_count} Flatpak{'s' if fp_count != 1 else ''}")
+        if img:
+            parts.append("system image")
+        summary = ", ".join(parts) + " available" if parts else ""
+
         self._updates_page.set_updates(result)
-        self._tray.set_updates(total)
+        self._tray.set_updates(total, summary)
 
         # Update badge on Updates tab
         page = self._stack.get_page(self._updates_page)
