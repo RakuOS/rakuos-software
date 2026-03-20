@@ -1061,6 +1061,7 @@ _FLATPAK_TO_RPM: dict[str, str] = {
     "org.telegram.desktop":           "telegram-desktop",
     "org.kde.elisa":                  "elisa",
     "org.gnome.nautilus":             "nautilus",
+    "com.mattjakeman.ExtensionManager":                               "extension-manager"
     "org.gnome.gedit":                "gedit",
     "org.gnome.eog":                  "eog",
     "org.gnome.totem":                "totem",
