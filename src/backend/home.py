@@ -62,7 +62,7 @@ _FALLBACK_PICKS = [
     "com.discordapp.Discord",
     "org.blender.Blender",
     "com.github.tchx84.Flatseal",
-    "org.inkscape.Inkscape",
+    "io.github.Faugus.faugus-launcher",
     "org.libreoffice.LibreOffice",
 ]
 
