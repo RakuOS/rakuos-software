@@ -19,3 +19,4 @@ X-GNOME-Autostart-Delay=10
 X-GNOME-Autostart-enabled=true
 X-KDE-SubstituteUID=false
 X-KDE-Username=
+StartupWMClass=org.rakuos.Software

@@ -7,6 +7,10 @@ GTK frontend is planned for a future release once the Qt interface is complete.
 import os
 import sys
 
+# Override argv[0] so Qt/GTK report "rakuos-software" as the process/WM_CLASS
+# name instead of "python3", which would otherwise appear in taskbars and docks.
+sys.argv[0] = "rakuos-software"
+
 # ── Redirect all Python bytecode out of the install tree ─────────────────────
 _cache_base = os.path.join(os.path.expanduser("~"), ".cache", "rakuos")
 os.makedirs(_cache_base, exist_ok=True)

@@ -25,6 +25,7 @@ class MainWindow(Adw.ApplicationWindow):
                  flatpakref=None, appimage_file=None, **kwargs):
         super().__init__(application=app, **kwargs)
         self.set_title("RakuOS Software")
+        self.set_icon_name("system-software-install")
         self.set_default_size(1100, 750)
         self.set_size_request(600, 480)
 

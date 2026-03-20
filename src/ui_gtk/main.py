@@ -9,6 +9,9 @@ from gi.repository import Adw, Gio, GLib
 
 from .window import MainWindow
 
+GLib.set_prgname("rakuos-software")
+GLib.set_application_name("RakuOS Software")
+
 
 class RakuOSSoftwareApp(Adw.Application):
     def __init__(self, start_hidden: bool = False, **file_args):

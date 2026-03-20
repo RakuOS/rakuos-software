@@ -556,6 +556,7 @@ def run(rpm_file: str = None, flatpak_file: str = None,
     app = QApplication(sys.argv)
     app.setApplicationName("RakuOS Software")
     app.setOrganizationName("RakuOS")
+    app.setDesktopFileName("rakuos-software")
     app.setStyleSheet(STYLE)
     app.setQuitOnLastWindowClosed(False)  # keep alive in tray
 
