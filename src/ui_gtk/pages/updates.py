@@ -23,6 +23,7 @@ class UpdatesPage(Gtk.Box):
         self._data  = {}
         self._image_card  = None
         self._update_rows = []
+        self._busy        = False   # True while an update sequence is running
         self.set_vexpand(True)
 
         # Stack: "loading" | "up_to_date" | "has_updates" | "reboot_required"
@@ -64,7 +65,6 @@ class UpdatesPage(Gtk.Box):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         outer.set_vexpand(True)
 
-        # Top bar
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         bar.set_margin_start(12)
         bar.set_margin_end(12)
@@ -119,7 +119,8 @@ class UpdatesPage(Gtk.Box):
 
         later_btn = Gtk.Button(label="Restart Later")
         later_btn.add_css_class("flat")
-        later_btn.connect("clicked", lambda *_: self._stack.set_visible_child_name("up_to_date"))
+        later_btn.connect("clicked",
+            lambda *_: self._stack.set_visible_child_name("up_to_date"))
         btn_box.append(later_btn)
 
         status.set_child(btn_box)
@@ -128,8 +129,10 @@ class UpdatesPage(Gtk.Box):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_updates(self, data: dict):
-        """Called by daemon or after manual check."""
+        """Called by daemon or after manual check. Ignored while updating."""
         self._data = data
+        if self._busy:
+            return   # don't tear down rows while a sequence is running
         if data.get("total", 0) == 0:
             self._stack.set_visible_child_name("up_to_date")
         else:
@@ -138,6 +141,8 @@ class UpdatesPage(Gtk.Box):
 
     def _do_check(self):
         """Manual refresh — show loading then fetch in background."""
+        if self._busy:
+            return
         self._stack.set_visible_child_name("loading")
         threading.Thread(target=self._fetch_and_render, daemon=True).start()
 
@@ -178,7 +183,6 @@ class UpdatesPage(Gtk.Box):
     # ── Populate update rows ───────────────────────────────────────────────────
 
     def _populate_updates(self, data: dict):
-        # Clear previous
         while True:
             child = self._updates_box.get_first_child()
             if child is None:
@@ -192,14 +196,12 @@ class UpdatesPage(Gtk.Box):
         fps  = data.get("flatpak", [])
         ais  = data.get("appimages", [])
 
-        # Applications: GUI rpms + flatpak apps
-        gui_pkgs = [p for p in pkgs if p.get("gui")]
-        fp_apps  = [dict(p, is_flatpak=True) for p in fps if not p.get("runtime")]
-        ai_apps  = [dict(a, is_appimage=True) for a in ais]
+        gui_pkgs  = [p for p in pkgs if p.get("gui")]
+        fp_apps   = [dict(p, is_flatpak=True) for p in fps if not p.get("runtime")]
+        ai_apps   = [dict(a, is_appimage=True) for a in ais]
         app_group = gui_pkgs + fp_apps + ai_apps
         if app_group:
-            section = self._make_section("Applications", app_group)
-            self._updates_box.append(section)
+            self._updates_box.append(self._make_section("Applications", app_group))
 
         fp_runtimes = [dict(p, is_flatpak=True) for p in fps if p.get("runtime")]
         if fp_runtimes:
@@ -225,14 +227,12 @@ class UpdatesPage(Gtk.Box):
     # ── Update all ────────────────────────────────────────────────────────────
 
     def _do_update_all(self):
+        if self._busy:
+            return
+        self._busy = True
         self._update_all_btn.set_sensitive(False)
         self._update_all_btn.set_label("Updating…")
 
-        # Mark all rows as updating immediately
-        for row in self._update_rows:
-            row.set_updating()
-
-        # Build sequential queue: rpms batch → flatpaks one-by-one → appimages → image last
         rpm_rows = [r for r in self._update_rows
                     if not r._item.get("is_flatpak") and not r._item.get("is_appimage")]
         fp_rows  = [r for r in self._update_rows if r._item.get("is_flatpak")]
@@ -256,50 +256,63 @@ class UpdatesPage(Gtk.Box):
 
     def _run_step_sequence(self, steps: list, on_complete):
         if not steps:
-            on_complete()
+            try:
+                on_complete()
+            except Exception as e:
+                print(f"[updates] on_complete error: {e}")
             return
+
         step, remaining = steps[0], steps[1:]
 
         def after(success):
-            # Small delay between steps, then continue
-            GLib.timeout_add(250, lambda: (
-                self._run_step_sequence(remaining, on_complete), False)[1])
+            GLib.timeout_add(300,
+                lambda: (self._run_step_sequence(remaining, on_complete), False)[1])
 
-        step(after)
+        try:
+            step(after)
+        except Exception as e:
+            print(f"[updates] step error: {e}")
+            GLib.timeout_add(300,
+                lambda: (self._run_step_sequence(remaining, on_complete), False)[1])
 
     def _finish_updates(self):
-        """Called when all non-image updates complete and no image update."""
+        self._busy = False
         self._update_all_btn.set_label("Update All")
         self._update_all_btn.set_sensitive(True)
-        # Switch to up_to_date only if not showing reboot screen
         if self._stack.get_visible_child_name() != "reboot_required":
             self._stack.set_visible_child_name("up_to_date")
         return False
 
     def _on_image_done(self, ok: bool):
+        self._busy = False
         if ok:
             GLib.idle_add(
                 lambda: self._stack.set_visible_child_name("reboot_required") or False)
         else:
             if self._image_card:
                 GLib.idle_add(self._image_card.set_error)
-        # Reset button but do NOT switch away from reboot_required
         self._update_all_btn.set_label("Update All")
         self._update_all_btn.set_sensitive(True)
 
     # ── Per-type update runners ────────────────────────────────────────────────
 
     def _run_rpm_batch(self, rows: list, done_cb):
-        """Single dnf upgrade covers all RPM rows."""
+        for r in rows:
+            r.set_updating()
+
         def _worker():
+            ok = True
             try:
                 for line in _upd.upgrade_packages_stream():
-                    p = _parse_dnf_progress(line.strip())
+                    if line.startswith("__done__"):
+                        ok = line == "__done__0"
+                        break
+                    p = _parse_dnf_progress(line)
                     if p is not None:
                         for r in rows:
                             GLib.idle_add(r.set_progress, p)
-                ok = True
-            except Exception:
+            except Exception as e:
+                print(f"[updates] rpm batch error: {e}")
                 ok = False
             for r in rows:
                 GLib.idle_add(r.set_done, ok)
@@ -310,16 +323,21 @@ class UpdatesPage(Gtk.Box):
     def _run_flatpak(self, row: "UpdateRow", done_cb):
         item   = row._item
         app_id = item.get("app_id") or item.get("id") or item.get("application", "")
+        row.set_updating()
 
         def _worker():
+            ok = True
             try:
                 from backend import flatpak as _fp
                 for line in _fp.update_flatpak_stream(app_id):
-                    p = _parse_flatpak_progress(line.strip())
+                    if line.startswith("__done__"):
+                        ok = line == "__done__0"
+                        break
+                    p = _parse_flatpak_progress(line)
                     if p is not None:
                         GLib.idle_add(row.set_progress, p)
-                ok = True
-            except Exception:
+            except Exception as e:
+                print(f"[updates] flatpak error for {app_id}: {e}")
                 ok = False
             GLib.idle_add(row.set_done, ok)
             GLib.idle_add(done_cb, ok)
@@ -332,22 +350,28 @@ class UpdatesPage(Gtk.Box):
         dl_url = item.get("download_url", "")
 
         if not app_id or not dl_url:
-            GLib.idle_add(row.set_done, False)
+            row.set_done(False)
             GLib.idle_add(done_cb, False)
             return
 
+        row.set_updating()
+
         def _worker():
+            ok = True
             try:
                 from backend import appimages as _aim
                 for line in _aim.update_appimage_stream(app_id, dl_url):
+                    if line.startswith("__done__"):
+                        ok = line == "__done__0"
+                        break
                     if line.startswith("DOWNLOAD:"):
                         try:
                             GLib.idle_add(row.set_progress,
                                           int(line.split(":")[1]) / 100)
                         except (ValueError, IndexError):
                             pass
-                ok = True
-            except Exception:
+            except Exception as e:
+                print(f"[updates] appimage error for {app_id}: {e}")
                 ok = False
             GLib.idle_add(row.set_done, ok)
             GLib.idle_add(done_cb, ok)
@@ -355,23 +379,26 @@ class UpdatesPage(Gtk.Box):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _run_image_update(self, done_cb):
-        """Run the OS image update using the updates backend stream."""
         if self._image_card:
             GLib.idle_add(self._image_card.set_updating)
 
-        info         = self._data.get("image_info", {})
-        update_type  = info.get("type", "switch")
-        repo_url     = info.get("repo", "")
-        new_tag      = info.get("available", "")
+        info        = self._data.get("image_info", {})
+        update_type = info.get("type", "switch")
+        repo_url    = info.get("repo", "")
+        new_tag     = info.get("available", "")
 
         def _worker():
+            ok = True
             try:
                 for line in _upd.upgrade_image_stream(update_type, repo_url, new_tag):
-                    p = _parse_bootc_progress(line.strip())
+                    if line.startswith("__done__"):
+                        ok = line == "__done__0"
+                        break
+                    p = _parse_bootc_progress(line)
                     if p is not None and self._image_card:
                         GLib.idle_add(self._image_card.set_progress, p)
-                ok = True
-            except Exception:
+            except Exception as e:
+                print(f"[updates] image update error: {e}")
                 ok = False
             GLib.idle_add(done_cb, ok)
 
@@ -383,7 +410,8 @@ class UpdatesPage(Gtk.Box):
 class UpdateRow(Adw.ActionRow):
     def __init__(self, item: dict):
         super().__init__()
-        self._item = item
+        self._item    = item
+        self._alive   = True   # False after dissolve
 
         import os
         self.set_title(item.get("name") or item.get("id", ""))
@@ -404,7 +432,6 @@ class UpdateRow(Adw.ActionRow):
                 item.get("icon", "application-x-executable-symbolic"))
         self.add_prefix(icon_img)
 
-        # Progress bar (hidden until update starts)
         self._progress = Gtk.ProgressBar()
         self._progress.set_pulse_step(0.1)
         self._progress.set_visible(False)
@@ -413,32 +440,39 @@ class UpdateRow(Adw.ActionRow):
         self.add_suffix(self._progress)
 
     def set_updating(self):
+        if not self._alive:
+            return
         self._progress.set_visible(True)
         self._progress.set_fraction(0.0)
-        # Pulse until real progress arrives
+
         def _pulse():
+            if not self._alive:
+                return False
             if self._progress.get_fraction() == 0.0 and self._progress.get_visible():
                 self._progress.pulse()
                 return True
             return False
-        GLib.timeout_add(200, _pulse)
+
+        GLib.timeout_add(150, _pulse)
 
     def set_progress(self, fraction: float):
+        if not self._alive:
+            return
         self._progress.set_visible(True)
         self._progress.set_fraction(min(1.0, max(0.0, fraction)))
 
     def set_done(self, success: bool):
+        if not self._alive:
+            return
         self._progress.set_fraction(1.0 if success else 0.0)
         if success:
-            GLib.timeout_add(400, self._dissolve)
+            GLib.timeout_add(500, self._dissolve)
 
     def _dissolve(self):
-        parent = self.get_parent()
-        if parent:
-            try:
-                parent.remove(self)
-            except Exception:
-                pass
+        self._alive = False
+        # Just hide — don't try to remove from AdwPreferencesGroup's
+        # internal container (causes GTK criticals).
+        self.set_visible(False)
         return False
 
 
@@ -510,6 +544,7 @@ class ImageUpdateCard(Gtk.Frame):
                 self._progress.pulse()
                 return True
             return False
+
         GLib.timeout_add(200, _pulse)
 
     def set_progress(self, fraction: float):

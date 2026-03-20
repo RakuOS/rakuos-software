@@ -73,6 +73,7 @@ class PackageUpdateRow(QFrame):
     def __init__(self, pkg: dict, show_icon: bool = False, parent=None):
         super().__init__(parent)
         self._pkg = pkg
+        self._alive = True
         self.setObjectName("updateRow")
         self.setFrameShape(QFrame.Shape.NoFrame)
 
@@ -174,6 +175,9 @@ class PackageUpdateRow(QFrame):
             self._status.show()
 
     def _dissolve(self):
+        if not self._alive:
+            return
+        self._alive = False
         self.hide()
         p = self.parent()
         if p and hasattr(p, "_on_row_hidden"):
@@ -358,6 +362,7 @@ class UpdatesPage(QWidget):
         self._image_info: dict = {}
         self._all_sections: list[UpdateSection] = []
         self._last_result: dict = {}
+        self._busy: bool = False   # True while any update sequence is running
 
         # ── Top bar ──────────────────────────────────────────────────────────
         topbar = QHBoxLayout()
@@ -417,6 +422,8 @@ class UpdatesPage(QWidget):
     # ── Load ─────────────────────────────────────────────────────────────────
 
     def load(self, result: dict = None):
+        if self._busy:
+            return
         self._clear()
         self._update_all_btn.hide()
         self._overall_bar.hide()
@@ -539,16 +546,25 @@ class UpdatesPage(QWidget):
         Each callable receives a done(success: bool) callback.
         """
         if not steps:
-            on_complete()
+            try:
+                on_complete()
+            except Exception:
+                pass
             return
         step, remaining = steps[0], steps[1:]
 
         def after(success):
-            QTimer.singleShot(250, lambda: self._run_step_sequence(remaining, on_complete))
+            QTimer.singleShot(300, lambda: self._run_step_sequence(remaining, on_complete))
 
-        step(after)
+        try:
+            step(after)
+        except Exception:
+            after(False)
 
     def _do_update_all(self):
+        if self._busy:
+            return
+        self._busy = True
         self._update_all_btn.hide()
         self._overall_bar.setRange(0, 0)
         self._overall_bar.show()
@@ -578,15 +594,19 @@ class UpdatesPage(QWidget):
         def on_apps_done():
             self._overall_bar.hide()
             if self._image_card:
-                # Image update always runs last
+                # Image update always runs last; _busy cleared in _on_image_done
                 self._do_image_update()
             else:
+                self._busy = False
                 QTimer.singleShot(600, lambda: self.load(None))
 
         self._run_step_sequence(steps, on_apps_done)
 
     def _run_section_update(self, sec: "UpdateSection"):
         """Update All within a single section — sequential, same engine."""
+        if self._busy:
+            return
+        self._busy = True
         sec.set_all_updating()
         rpm_rows, fp_tasks, ai_tasks = [], [], []
         for row, pkg in sec.rows_with_pkgs():
@@ -605,16 +625,26 @@ class UpdatesPage(QWidget):
         for row, pkg in ai_tasks:
             steps.append(lambda cb, r=row, p=pkg: self._run_appimage_update(r, p, cb))
 
-        self._run_step_sequence(steps, lambda: None)
+        def _done():
+            self._busy = False
+
+        self._run_step_sequence(steps, _done)
 
     def _on_single_row_update(self, row: PackageUpdateRow, pkg: dict):
         """Single-row Update button — reuse the same helpers."""
+        if self._busy:
+            return
+        self._busy = True
+
+        def _done(_=None):
+            self._busy = False
+
         if pkg.get("is_appimage"):
-            self._run_appimage_update(row, pkg, lambda _: None)
+            self._run_appimage_update(row, pkg, _done)
         elif pkg.get("is_flatpak"):
-            self._run_flatpak_update(row, pkg, lambda _: None)
+            self._run_flatpak_update(row, pkg, _done)
         else:
-            self._run_rpm_batch([(row, pkg)], lambda _: None)
+            self._run_rpm_batch([(row, pkg)], _done)
 
     # ── Per-type update helpers ───────────────────────────────────────────────
 
@@ -722,6 +752,7 @@ class UpdatesPage(QWidget):
             buf.append(line)
 
         def _done(code):
+            self._busy = False
             if code == 0:
                 self._show_reboot_required()
             else:
