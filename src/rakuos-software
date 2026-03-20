@@ -49,11 +49,31 @@ if os.environ.get("RAKUOS_DEBUG"):
     print(f"[entry] rpm={_rpm_file} flatpak={_flatpak_file} "
           f"ref={_flatpakref} appimage={_appimage_file}")
 
-# ── Pick frontend based on DE ─────────────────────────────────────────────────
-_de = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+# ── Pick frontend ─────────────────────────────────────────────────────────────
+# Priority: --ui=gtk/qt flag > RAKUOS_UI env var > DE auto-detect
+_ui = None
+for _arg in sys.argv[1:]:
+    if _arg.startswith("--ui="):
+        _ui = _arg.split("=", 1)[1].lower()
+        sys.argv.remove(_arg)
+        break
 
-if "gnome" in _de:
-    from ui_qt.main import run
+if not _ui:
+    _ui = os.environ.get("RAKUOS_UI", "").lower()
+
+if not _ui:
+    _de = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    _ui = "gtk" if "gnome" in _de else "qt"
+
+if os.environ.get("RAKUOS_DEBUG"):
+    print(f"[entry] ui={_ui}")
+
+if _ui == "gtk":
+    try:
+        from ui_gtk.main import run
+    except ImportError as _e:
+        print(f"[entry] GTK frontend unavailable ({_e}), falling back to Qt")
+        from ui_qt.main import run
 else:
     from ui_qt.main import run
 
