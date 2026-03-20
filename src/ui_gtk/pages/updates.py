@@ -48,7 +48,7 @@ class UpdatesPage(Gtk.Box):
 
     def _build_up_to_date_page(self):
         status = Adw.StatusPage()
-        status.set_icon_name("emblem-ok-symbolic")
+        status.set_icon_name("emblem-default-symbolic")
         status.set_title("Up to Date")
         status.set_description("Your system and all apps are up to date.")
 
@@ -102,7 +102,7 @@ class UpdatesPage(Gtk.Box):
 
     def _build_reboot_page(self):
         status = Adw.StatusPage()
-        status.set_icon_name("system-restart-symbolic")
+        status.set_icon_name("system-reboot-symbolic")
         status.set_title("Restart Required")
         status.set_description(
             "The new system image has been downloaded and staged.\n"
