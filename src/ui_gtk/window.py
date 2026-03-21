@@ -129,6 +129,9 @@ class MainWindow(Adw.ApplicationWindow):
         # Update back button visibility when nav stack changes
         self._nav.connect("notify::visible-page", self._on_nav_changed)
 
+        # Re-check for updates when switching to the updates tab after data was cleared
+        self._stack.connect("notify::visible-child", self._on_tab_changed)
+
         # ── Handle file args ─────────────────────────────────────────────────
         if rpm_file:
             GLib.idle_add(lambda: self._open_local_file("rpm", rpm_file) or False)
@@ -204,6 +207,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def go_back(self):
         self._nav.pop()
+
+    def _on_tab_changed(self, stack, _param):
+        page = stack.get_visible_child()
+        if page is self._updates_page and not self._updates_page._data:
+            self._updates_page._do_check()
 
     def _on_nav_changed(self, nav, _param):
         depth = len(nav.get_navigation_stack())

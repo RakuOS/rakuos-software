@@ -14,28 +14,186 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
-def _get_system_lang() -> str:
-    """Get system language code e.g. 'en', 'de', 'fr'"""
+# ── Timezone → default locale mapping (last-resort fallback) ──────────────────
+_TZ_LANG_MAP: dict[str, str] = {
+    "America/New_York":    "en_US", "America/Chicago":      "en_US",
+    "America/Denver":      "en_US", "America/Los_Angeles":  "en_US",
+    "America/Toronto":     "en_CA", "America/Vancouver":    "en_CA",
+    "America/Montreal":    "fr_CA", "America/Sao_Paulo":    "pt_BR",
+    "America/Buenos_Aires":"es_AR", "America/Mexico_City":  "es_MX",
+    "America/Bogota":      "es_CO", "America/Lima":         "es_PE",
+    "America/Santiago":    "es_CL", "America/Caracas":      "es_VE",
+    "America/Havana":      "es_CU",
+    "Europe/London":       "en_GB", "Europe/Dublin":        "en_IE",
+    "Europe/Paris":        "fr_FR", "Europe/Brussels":      "fr_BE",
+    "Europe/Berlin":       "de_DE", "Europe/Vienna":        "de_AT",
+    "Europe/Zurich":       "de_CH", "Europe/Madrid":        "es_ES",
+    "Europe/Rome":         "it_IT", "Europe/Amsterdam":     "nl_NL",
+    "Europe/Warsaw":       "pl_PL", "Europe/Prague":        "cs_CZ",
+    "Europe/Budapest":     "hu_HU", "Europe/Bucharest":     "ro_RO",
+    "Europe/Stockholm":    "sv_SE", "Europe/Copenhagen":    "da_DK",
+    "Europe/Helsinki":     "fi_FI", "Europe/Oslo":          "nb_NO",
+    "Europe/Lisbon":       "pt_PT", "Europe/Athens":        "el_GR",
+    "Europe/Kiev":         "uk_UA", "Europe/Kyiv":          "uk_UA",
+    "Europe/Moscow":       "ru_RU", "Europe/Istanbul":      "tr_TR",
+    "Asia/Tokyo":          "ja_JP", "Asia/Shanghai":        "zh_CN",
+    "Asia/Hong_Kong":      "zh_HK", "Asia/Taipei":          "zh_TW",
+    "Asia/Seoul":          "ko_KR", "Asia/Kolkata":         "hi_IN",
+    "Asia/Bangkok":        "th_TH", "Asia/Jakarta":         "id_ID",
+    "Asia/Kuala_Lumpur":   "ms_MY", "Asia/Singapore":       "en_SG",
+    "Asia/Riyadh":         "ar_SA", "Asia/Tehran":          "fa_IR",
+    "Asia/Jerusalem":      "he_IL", "Asia/Karachi":         "ur_PK",
+    "Australia/Sydney":    "en_AU", "Australia/Melbourne":  "en_AU",
+    "Pacific/Auckland":    "en_NZ", "Africa/Cairo":         "ar_EG",
+    "Africa/Lagos":        "en_NG", "Africa/Johannesburg":  "en_ZA",
+    "Africa/Nairobi":      "sw_KE", "Africa/Casablanca":    "ar_MA",
+}
+
+_TZ_AREA_FALLBACK: list[tuple[str, str]] = [
+    ("America/",  "en_US"), ("Europe/",   "en_GB"),
+    ("Asia/",     "en_US"), ("Australia/","en_AU"),
+    ("Pacific/",  "en_US"), ("Africa/",   "en_ZA"),
+]
+
+
+def _detect_timezone() -> str:
+    """Return the system timezone string e.g. 'America/New_York'."""
     import os as _os
-    # Try env vars first — most reliable on modern Linux/Flatpak/Wayland
-    for var in ("LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES"):
-        val = _os.environ.get(var, "")
-        if val and val.upper() not in ("", "C", "POSIX", "C.UTF-8"):
-            lang = val.split(".")[0].split("_")[0].lower()
-            if lang and lang != "c":
-                return lang
-    # Fall back to Python locale module
+    tz = _os.environ.get("TZ", "")
+    if tz:
+        return tz
     try:
-        lang = locale.getlocale()[0] or ""
-        if lang and lang.upper() not in ("C", "POSIX"):
-            return lang.split("_")[0].lower()
+        return open("/etc/timezone").read().strip()
     except Exception:
         pass
-    return "en"
+    try:
+        link = _os.readlink("/etc/localtime")
+        idx = link.find("zoneinfo/")
+        if idx >= 0:
+            return link[idx + 9:]
+    except Exception:
+        pass
+    return ""
 
-# Evaluated once at import — good enough since locale doesn't change mid-session
-SYSTEM_LANG = _get_system_lang()
-print(f"[packages] SYSTEM_LANG={SYSTEM_LANG!r}  LANG_env={__import__('os').environ.get('LANG','unset')}")
+
+def _lang_from_timezone() -> str:
+    """Return full locale code (e.g. 'en_US') inferred from system timezone."""
+    tz = _detect_timezone()
+    if tz in _TZ_LANG_MAP:
+        return _TZ_LANG_MAP[tz]
+    for prefix, fallback in _TZ_AREA_FALLBACK:
+        if tz.startswith(prefix):
+            return fallback
+    return ""
+
+
+def _get_system_lang() -> str:
+    """
+    Detect the user's locale, write LANG to os.environ, return full locale code.
+
+    Returns the full locale string e.g. 'en_US', 'de_DE', 'pt_BR'.
+    Callers extract the 2-letter code with .split('_')[0].
+
+    Detection order:
+      1. Env vars: LANG / LANGUAGE / LC_ALL / LC_MESSAGES / LC_TIME / LC_CTYPE
+         (all checked — when LANG=C.UTF-8 the LC_* vars often carry the real locale)
+      2. /etc/locale.conf and ~/.config/locale.conf — ALL LC_* keys scanned,
+         not just LANG=, so LC_TIME=en_US.UTF-8 is found even when LANG=C.UTF-8
+      3. localectl status — checks LC_MESSAGES then LANG
+      4. Python locale module
+      5. Timezone inference (last resort)
+    """
+    import os as _os
+    import subprocess as _sp
+
+    def _normalise_and_set(full_val: str) -> str:
+        """Strip encoding, write LANG, return full locale e.g. 'en_US'."""
+        base = full_val.split(".")[0]   # "en_US.UTF-8" → "en_US" / "de" → "de"
+        _os.environ["LANG"] = base + ".UTF-8"
+        return base
+
+    def _bad(val: str) -> bool:
+        return val.upper() in ("", "C", "POSIX", "C.UTF-8", "C.UTF8")
+
+    # Priority order for LC_ vars: messages first (most relevant for UI text),
+    # then time (often set by desktop even when LANG=C), then others.
+    _LC_PRIORITY = ("LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES",
+                    "LC_TIME", "LC_CTYPE", "LC_NUMERIC")
+
+    # 1. Env vars ─────────────────────────────────────────────────────────────
+    for var in _LC_PRIORITY:
+        val = _os.environ.get(var, "")
+        if val and not _bad(val):
+            base = val.split(".")[0]
+            code = base.split("_")[0].lower()
+            if code and code != "c":
+                _os.environ["LANG"] = base + ".UTF-8"
+                return base
+
+    # 2. locale.conf files — scan ALL LC_* keys, not just LANG= ───────────────
+    for conf in ("/etc/locale.conf",
+                 _os.path.expanduser("~/.config/locale.conf")):
+        try:
+            lc_found: dict[str, str] = {}
+            for line in open(conf):
+                line = line.strip()
+                for key in _LC_PRIORITY:
+                    if line.startswith(key + "="):
+                        val = line[len(key) + 1:].strip("\"'")
+                        if val and not _bad(val):
+                            lc_found[key] = val
+            # Use the highest-priority key found in this file
+            for key in _LC_PRIORITY:
+                if key in lc_found:
+                    return _normalise_and_set(lc_found[key])
+        except Exception:
+            pass
+
+    # 3. localectl — check LC_MESSAGES then LANG ──────────────────────────────
+    try:
+        out = _sp.run(["localectl", "status"],
+                      capture_output=True, text=True, timeout=3)
+        lc_found = {}
+        for line in out.stdout.splitlines():
+            for key in _LC_PRIORITY:
+                m = re.search(rf'{key}=([^\s"\']+)', line)
+                if m:
+                    val = m.group(1)
+                    if not _bad(val):
+                        lc_found[key] = val
+        for key in _LC_PRIORITY:
+            if key in lc_found:
+                return _normalise_and_set(lc_found[key])
+    except Exception:
+        pass
+
+    # 4. Python locale module ─────────────────────────────────────────────────
+    try:
+        loc = locale.getlocale()[0] or ""
+        if loc and loc.upper() not in ("C", "POSIX"):
+            return _normalise_and_set(loc)
+    except Exception:
+        pass
+
+    # 5. Timezone inference ───────────────────────────────────────────────────
+    tz_locale = _lang_from_timezone()
+    if tz_locale:
+        return _normalise_and_set(tz_locale)
+
+    # Final fallback
+    _os.environ.setdefault("LANG", "en_US.UTF-8")
+    return "en_US"
+
+
+# ── Module-level locale constants (evaluated once at import) ──────────────────
+_SYSTEM_LOCALE = _get_system_lang()              # e.g. "en_US", "de_DE", "pt_BR"
+SYSTEM_LANG    = _SYSTEM_LOCALE.split("_")[0].lower()  # e.g. "en", "de", "pt"
+# Normalised forms used for by_lang_full dict lookups (xml:lang is lowercased)
+_SYSLOCALE_US  = _SYSTEM_LOCALE.lower()                     # "en_us", "pt_br"
+_SYSLOCALE_HYP = _SYSTEM_LOCALE.lower().replace("_", "-")   # "en-us", "pt-br"
+
+print(f"[packages] SYSTEM_LANG={SYSTEM_LANG!r}  SYSTEM_LOCALE={_SYSTEM_LOCALE!r}"
+      f"  LANG={os.environ.get('LANG', 'unset')}")
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 
@@ -46,37 +204,56 @@ _LATIN_LANGS = {
 }
 
 def _pick_lang(by_lang: dict, default: str) -> str:
-    """Pick best text from a lang→text dict, preferring system lang then en."""
-    # 1. Exact system language match
+    """Pick best text from a lang→text dict, preferring system lang then English."""
+    # 1. Exact system language match (2-letter code, e.g. "de", "fr")
     if by_lang.get(SYSTEM_LANG):
         return by_lang[SYSTEM_LANG]
-    # 2. English variants
-    for en in ("en", "en-us", "en-gb"):
-        if by_lang.get(en):
-            return by_lang[en]
-    # 3. Untagged default (most AppStream files store English as default)
+    # 2. Untagged default — English content in AppStream is NEVER tagged with
+    #    xml:lang="en"; it is always the untagged default element.
     if default:
         return default
-    # 4. Any Latin-script language (better than returning nothing or CJK/RTL)
+    # 3. Any Latin-script language (better than CJK/RTL for Latin readers)
     for lang, text in by_lang.items():
         if lang.split("-")[0] in _LATIN_LANGS and text:
             return text
-    # 5. Absolute last resort — first available (at least shows something)
+    # 4. Absolute last resort — first available
     return next((v for v in by_lang.values() if v), "")
 
 
 def _lang_key(lang: str) -> str:
-    """Normalise xml:lang value to a simple language code.
-    Handles both BCP-47 (en-GB) and POSIX (en_GB) style tags.
+    """Return 2-letter language code for country-regional variants only.
+
+    Strips 2-letter country subtags (en-GB → en, de-AT → de, pt-BR → pt).
+    Does NOT strip script subtags (en-shaw, zh-Hans, be-Cyrl) — those
+    would corrupt by_lang["en"] with Shaw/Cyrillic alphabet text.
+    Returns "" for script variants so callers can skip adding to by_lang.
     """
-    return lang.replace("_", "-").split("-")[0].lower()
+    parts = lang.replace("_", "-").split("-")
+    code = parts[0].lower()
+    if len(parts) == 1:
+        return code
+    # Only strip if the subtag is exactly 2 alpha chars (ISO 3166 country code).
+    # 4-letter script tags (shaw, Latn, Cyrl, Hans, Hant) are NOT stripped.
+    if len(parts[1]) == 2 and parts[1].isalpha():
+        return code
+    return ""  # script/variant tag — caller should skip by_lang entry
 
 
 def _get_localized(comp, tag: str) -> str:
-    """Get localized text matching system locale with English fallback."""
+    """Get localized text matching system locale with English fallback.
+
+    AppStream XML facts (verified from real data):
+      - English text is usually the untagged default element. Some Flatpak entries
+        also have en-CA / en-GB (country variants) and en-shaw (Shaw alphabet) tags.
+      - Script variants like en-shaw, zh-Hans, be-Cyrl must NOT be stripped to their
+        base code — _lang_key() returns "" for them so they never pollute by_lang.
+      - Regional variants use both POSIX (pt_BR) and BCP-47 (pt-BR) style tags.
+      - We check the full locale in both forms so e.g. pt_BR users get Brazilian
+        Portuguese, not European Portuguese.
+    """
     els = comp.findall(tag)
-    by_lang = {}    # normalised lang code → text
-    by_lang_full = {}  # full lang tag → text (for en-GB etc)
+    by_lang = {}       # normalised 2-letter code → text  e.g. "de" → "..."
+    by_lang_full = {}  # full lowercased tag → text       e.g. "pt_br" → "..."
     default = ""
     for el in els:
         raw_lang = el.get(XML_LANG, "")
@@ -85,16 +262,16 @@ def _get_localized(comp, tag: str) -> str:
             default = text
         else:
             by_lang_full[raw_lang.lower()] = text
-            by_lang[_lang_key(raw_lang)] = text
-    # Check full tags first for exact match (e.g. en-GB, en_US)
+            code = _lang_key(raw_lang)
+            if code:  # skip script variants (en-shaw, zh-Hans, be-Cyrl…)
+                by_lang[code] = text
+    # 1. Full regional locale — both POSIX and BCP-47 forms
+    # 2. 2-letter language code (country variants ok, script variants excluded)
+    # 3. Untagged default (English for the vast majority of AppStream entries)
     result = (
-        by_lang_full.get(SYSTEM_LANG)
-        or by_lang.get(SYSTEM_LANG)
-        or by_lang_full.get("en-gb")
-        or by_lang_full.get("en-us")
-        or by_lang_full.get("en_gb")
-        or by_lang_full.get("en_us")
-        or by_lang.get("en")
+        by_lang_full.get(_SYSLOCALE_US)    # "pt_br" matches xml:lang="pt_BR"
+        or by_lang_full.get(_SYSLOCALE_HYP)  # "pt-br" matches xml:lang="pt-BR"
+        or by_lang.get(SYSTEM_LANG)          # "pt" matches xml:lang="pt"
         or default
     )
     return result or _pick_lang(by_lang, default)
@@ -112,15 +289,13 @@ def _get_localized_description(comp) -> str:
             default = text
         else:
             by_lang_full[raw_lang.lower()] = text
-            by_lang[_lang_key(raw_lang)] = text
+            code = _lang_key(raw_lang)
+            if code:
+                by_lang[code] = text
     result = (
-        by_lang_full.get(SYSTEM_LANG)
+        by_lang_full.get(_SYSLOCALE_US)
+        or by_lang_full.get(_SYSLOCALE_HYP)
         or by_lang.get(SYSTEM_LANG)
-        or by_lang_full.get("en-gb")
-        or by_lang_full.get("en-us")
-        or by_lang_full.get("en_gb")
-        or by_lang_full.get("en_us")
-        or by_lang.get("en")
         or default
     )
     return result or _pick_lang(by_lang, default)

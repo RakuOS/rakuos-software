@@ -14,45 +14,62 @@ from backend import packages as _pkg
 from ..icon_loader import resolve_icon_path
 
 CATEGORY_TREE = [
-    ("Games",        "Game",        "applications-games-symbolic", [
-        ("Action",       "ActionGame"),   ("Adventure",    "AdventureGame"),
-        ("Arcade",       "ArcadeGame"),   ("Board Games",  "BoardGame"),
-        ("Emulators",    "Emulator"),     ("Role Playing", "RolePlaying"),
-        ("Shooter",      "Shooter"),      ("Strategy",     "StrategyGame"),
+    ("Games",          "Game",        "applications-games-symbolic", [
+        ("Action",         "ActionGame"),    ("Adventure",    "AdventureGame"),
+        ("Arcade",         "ArcadeGame"),    ("Board Games",  "BoardGame"),
+        ("Card Games",     "CardGame"),      ("Emulators",    "Emulator"),
+        ("Kids",           "KidsGame"),      ("Logic",        "LogicGame"),
+        ("Role Playing",   "RolePlaying"),   ("Shooter",      "Shooter"),
+        ("Simulation",     "Simulation"),    ("Sports",       "SportsGame"),
+        ("Strategy",       "StrategyGame"),
     ]),
-    ("Internet",     "Network",     "applications-internet-symbolic", [
-        ("Web Browsers", "WebBrowser"),   ("Email",        "Email"),
-        ("Chat &amp; IM",    "InstantMessaging"), ("File Sharing","FileTransfer"),
-        ("News &amp; RSS",   "News"),
+    ("Internet",       "Network",     "applications-internet-symbolic", [
+        ("Web Browsers",   "WebBrowser"),    ("Email",        "Email"),
+        ("Chat &amp; IM",  "InstantMessaging"), ("File Sharing", "FileTransfer"),
+        ("News &amp; RSS", "News"),           ("Remote Access","RemoteAccess"),
     ]),
-    ("Audio &amp; Video","AudioVideo",  "applications-multimedia-symbolic", [
-        ("Music",        "Music"),        ("Video",        "Video"),
-        ("Editors",      "AudioVideoEditing"), ("Podcasts","Podcasting"),
+    ("Audio &amp; Video", "AudioVideo", "applications-multimedia-symbolic", [
+        ("Music",          "Music"),         ("Video",        "Video"),
+        ("Editors",        "AudioVideoEditing"), ("MIDI",     "Midi"),
+        ("TV",             "TV"),            ("Recorders",    "Recorder"),
+        ("Mixers",         "Mixer"),
     ]),
-    ("Graphics",     "Graphics",    "applications-graphics-symbolic", [
-        ("2D Editors",   "2DGraphics"),   ("3D Editors",   "3DGraphics"),
-        ("Photography",  "Photography"),  ("Viewers",      "Viewer"),
+    ("Graphics",       "Graphics",    "applications-graphics-symbolic", [
+        ("2D Editors",     "2DGraphics"),    ("3D Editors",   "3DGraphics"),
+        ("Photography",    "Photography"),   ("Viewers",      "Viewer"),
+        ("Publishing",     "Publishing"),    ("Scanning",     "Scanning"),
     ]),
-    ("Productivity", "Office",      "applications-office-symbolic", [
-        ("Office Suite", "WordProcessor"),("Spreadsheets", "Spreadsheet"),
-        ("Presentation", "Presentation"), ("Calendar",     "Calendar"),
-        ("Notes",        "Notes"),
+    ("Productivity",   "Office",      "applications-office-symbolic", [
+        ("Office Suite",   "WordProcessor"), ("Spreadsheets", "Spreadsheet"),
+        ("Presentation",   "Presentation"),  ("Calendar",     "Calendar"),
+        ("Finance",        "Finance"),       ("Contacts",     "ContactManagement"),
+        ("Project Mgmt",   "ProjectManagement"),
     ]),
-    ("Development",  "Development", "applications-development-symbolic", [
-        ("IDEs",         "IDE"),          ("Version Control","RevisionControl"),
-        ("Debuggers",    "Debugger"),     ("Web Dev",      "WebDevelopment"),
+    ("Development",    "Development", "applications-development-symbolic", [
+        ("IDEs",           "IDE"),           ("Version Control", "RevisionControl"),
+        ("Debuggers",      "Debugger"),      ("Web Dev",      "WebDevelopment"),
+        ("Database",       "Database"),      ("Data Viz",     "DataVisualization"),
     ]),
-    ("System",       "System",      "applications-system-symbolic", [
-        ("File Managers","FileManager"),  ("Terminal",     "TerminalEmulator"),
-        ("Monitors",     "Monitor"),      ("Security",     "Security"),
+    ("System",         "System",      "applications-system-symbolic", [
+        ("File Managers",  "FileManager"),   ("Terminal",     "TerminalEmulator"),
+        ("Monitors",       "Monitor"),       ("Security",     "Security"),
+        ("Settings",       "Settings"),      ("Package Mgmt", "PackageManager"),
     ]),
-    ("Utilities",    "Utility",     "applications-utilities-symbolic", [
-        ("Archiving",    "Archiving"),    ("Calculators",  "Calculator"),
-        ("Clocks",       "Clock"),        ("Text Editors", "TextEditor"),
+    ("Utilities",      "Utility",     "applications-utilities-symbolic", [
+        ("Archiving",      "Archiving"),     ("Calculators",  "Calculator"),
+        ("Clocks",         "Clock"),         ("Text Editors", "TextEditor"),
+        ("File Tools",     "FileTools"),     ("Dictionary",   "Dictionary"),
     ]),
-    ("Education",    "Education",   "applications-science-symbolic", [
-        ("Languages",    "Languages"),    ("Mathematics",  "Math"),
-        ("Science",      "Science"),
+    ("Science",        "Science",     "applications-science-symbolic", [
+        ("Astronomy",      "Astronomy"),     ("Chemistry",    "Chemistry"),
+        ("Electronics",    "Electronics"),   ("Engineering",  "Engineering"),
+        ("Geography",      "Geography"),     ("Physics",      "Physics"),
+        ("Data Viz",       "DataVisualization"),
+    ]),
+    ("Education",      "Education",   "accessories-dictionary-symbolic", [
+        ("Languages",      "Languages"),     ("Mathematics",  "Math"),
+        ("Science",        "Science"),       ("Literature",   "Literature"),
+        ("Geography",      "Geography"),     ("Kids",         "KidsGame"),
     ]),
 ]
 

@@ -130,9 +130,9 @@ class UpdatesPage(Gtk.Box):
 
     def set_updates(self, data: dict):
         """Called by daemon or after manual check. Ignored while updating."""
-        self._data = data
         if self._busy:
             return   # don't tear down rows while a sequence is running
+        self._data = data
         if data.get("total", 0) == 0:
             self._stack.set_visible_child_name("up_to_date")
         else:
@@ -277,6 +277,7 @@ class UpdatesPage(Gtk.Box):
 
     def _finish_updates(self):
         self._busy = False
+        self._data = {}   # clear stale data so next tab visit triggers a fresh check
         self._update_all_btn.set_label("Update All")
         self._update_all_btn.set_sensitive(True)
         if self._stack.get_visible_child_name() != "reboot_required":
@@ -285,6 +286,7 @@ class UpdatesPage(Gtk.Box):
 
     def _on_image_done(self, ok: bool):
         self._busy = False
+        self._data = {}   # clear stale data so next tab visit triggers a fresh check
         if ok:
             GLib.idle_add(
                 lambda: self._stack.set_visible_child_name("reboot_required") or False)
