@@ -43,5 +43,6 @@
     "info.cemu.cemu":                     "cemu",
     "io.github.ryubing.ryujinx":          "ryujinx",
     "com.heroicgameslauncher.hgl":        "heroic-games-launcher-bin",
-    "io.github.faugus.faugus-launcher":   "faugus-launcher"
+    "io.github.faugus.faugus-launcher":   "faugus-launcher",
+    "com.vysp3r.protonplus":              "protonplus"
 }
