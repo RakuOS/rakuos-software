@@ -354,6 +354,8 @@ class ImageUpdateCard(QFrame):
 # ── Main page ─────────────────────────────────────────────────────────────────
 
 class UpdatesPage(QWidget):
+    check_done = pyqtSignal(dict)   # emitted after every fresh check (for tray update)
+
     def __init__(self):
         super().__init__()
         self._workers: list = []
@@ -361,7 +363,7 @@ class UpdatesPage(QWidget):
         self._image_card: ImageUpdateCard | None = None
         self._image_info: dict = {}
         self._all_sections: list[UpdateSection] = []
-        self._last_result: dict = {}
+        self._last_result: dict | None = None   # None = never checked / needs refresh
         self._busy: bool = False   # True while any update sequence is running
 
         # ── Top bar ──────────────────────────────────────────────────────────
@@ -397,7 +399,7 @@ class UpdatesPage(QWidget):
 
         self._refresh_btn = QPushButton("↻  Check for Updates")
         self._refresh_btn.setFixedWidth(160)
-        self._refresh_btn.clicked.connect(lambda: self.load(None))
+        self._refresh_btn.clicked.connect(self._force_check)
         topbar.addWidget(self._refresh_btn)
 
         topbar_w = QWidget()
@@ -421,8 +423,16 @@ class UpdatesPage(QWidget):
 
     # ── Load ─────────────────────────────────────────────────────────────────
 
+    def _force_check(self):
+        """Manual refresh — clear cache and fetch fresh."""
+        self._last_result = None
+        self.load(None)
+
     def load(self, result: dict = None):
         if self._busy:
+            return
+        # Use cached result if we already have one and no explicit result provided
+        if result is None and self._last_result is not None:
             return
         self._clear()
         self._update_all_btn.hide()
@@ -477,6 +487,7 @@ class UpdatesPage(QWidget):
         self._all_sections = []
 
         self._last_result = result
+        self.check_done.emit(result)   # notify window to update tray/badge
         pkgs      = result.get("packages", [])
         fps       = result.get("flatpak", [])
         ais       = result.get("appimages", [])
@@ -598,6 +609,7 @@ class UpdatesPage(QWidget):
                 self._do_image_update()
             else:
                 self._busy = False
+                self._last_result = None   # force fresh check after updates done
                 QTimer.singleShot(600, lambda: self.load(None))
 
         self._run_step_sequence(steps, on_apps_done)
@@ -627,6 +639,8 @@ class UpdatesPage(QWidget):
 
         def _done():
             self._busy = False
+            self._last_result = None
+            QTimer.singleShot(600, lambda: self.load(None))
 
         self._run_step_sequence(steps, _done)
 
@@ -638,6 +652,8 @@ class UpdatesPage(QWidget):
 
         def _done(_=None):
             self._busy = False
+            self._last_result = None
+            QTimer.singleShot(600, lambda: self.load(None))
 
         if pkg.get("is_appimage"):
             self._run_appimage_update(row, pkg, _done)
@@ -645,6 +661,25 @@ class UpdatesPage(QWidget):
             self._run_flatpak_update(row, pkg, _done)
         else:
             self._run_rpm_batch([(row, pkg)], _done)
+
+    # ── Cache helpers ─────────────────────────────────────────────────────────
+
+    def _remove_from_cache(self, pkgs: list[dict]):
+        """Remove completed packages from cache and emit check_done to update tray."""
+        if not self._last_result:
+            return
+        ids = {p.get("app_id") or p.get("id", "") for p in pkgs}
+        for key in ("packages", "flatpak", "appimages"):
+            self._last_result[key] = [
+                p for p in self._last_result.get(key, [])
+                if (p.get("app_id") or p.get("id", "")) not in ids
+            ]
+        self._last_result["total"] = (
+            len(self._last_result.get("packages", []))
+            + len(self._last_result.get("flatpak", []))
+            + (1 if self._last_result.get("image_available") else 0)
+        )
+        self.check_done.emit(self._last_result)
 
     # ── Per-type update helpers ───────────────────────────────────────────────
 
@@ -665,7 +700,9 @@ class UpdatesPage(QWidget):
             success = code == 0
             for row, _ in rpm_rows:
                 row.set_done(success)
-            if not success:
+            if success:
+                self._remove_from_cache([pkg for _, pkg in rpm_rows])
+            else:
                 self._show_error_in_terminal("RPM packages", code, buf)
             on_done(success)
 
@@ -690,7 +727,9 @@ class UpdatesPage(QWidget):
         def _done(code):
             success = code == 0
             row.set_done(success)
-            if not success:
+            if success:
+                self._remove_from_cache([pkg])
+            else:
                 self._show_error_in_terminal(name, code, buf)
             on_done(success)
 
@@ -726,7 +765,9 @@ class UpdatesPage(QWidget):
         def _done(code):
             success = code == 0
             row.set_done(success)
-            if not success:
+            if success:
+                self._remove_from_cache([pkg])
+            else:
                 self._show_error_in_terminal(name, code, buf)
             on_done(success)
 
@@ -753,6 +794,7 @@ class UpdatesPage(QWidget):
 
         def _done(code):
             self._busy = False
+            self._last_result = None   # force fresh check after image update
             if code == 0:
                 self._show_reboot_required()
             else:

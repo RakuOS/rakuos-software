@@ -404,6 +404,7 @@ class MainWindow(QMainWindow):
         self._daemon = UpdateDaemon(self)
         self._daemon.updates_ready.connect(self._on_updates_ready)
         self._daemon.updates_ready.connect(self._on_daemon_refresh_home)
+        self._updates.check_done.connect(self._on_page_check_done)
         self._daemon.notify.connect(self._on_notify)
         self._daemon.start()
 
@@ -423,13 +424,12 @@ class MainWindow(QMainWindow):
             # Reload in background so next visit is fresh
             self._home.load()
 
-    def _on_updates_ready(self, result: dict):
-        """Update tray badge and updates page when check completes."""
-        total = result["total"]
+    def _tray_summary(self, result: dict) -> tuple[int, str]:
+        """Return (total, summary_str) from a check result."""
+        total     = result.get("total", 0)
         pkg_count = len(result.get("packages", []))
         fp_count  = len(result.get("flatpak", []))
         img       = result.get("image_available", False)
-
         parts = []
         if pkg_count:
             parts.append(f"{pkg_count} package{'s' if pkg_count != 1 else ''}")
@@ -438,12 +438,22 @@ class MainWindow(QMainWindow):
         if img:
             parts.append("system image")
         summary = ", ".join(parts) + " available" if parts else ""
+        return total, summary
 
+    def _on_updates_ready(self, result: dict):
+        """Daemon check complete — update tray and page cache."""
+        total, summary = self._tray_summary(result)
         self._tray.set_updates(total, summary)
-
-        # Refresh updates page if it's currently visible
+        # Store in page cache so next tab visit renders without re-fetching
+        self._updates._last_result = result
+        # Re-render immediately if the updates tab is currently open
         if self._stack.currentWidget() is self._updates:
-            self._updates.load(result)
+            self._updates._render(result)
+
+    def _on_page_check_done(self, result: dict):
+        """Updates page did its own fresh check — sync tray/badge."""
+        total, summary = self._tray_summary(result)
+        self._tray.set_updates(total, summary)
 
     def _on_notify(self, title: str, body: str):
         """Show desktop notification via tray or notify-send."""
@@ -478,7 +488,7 @@ class MainWindow(QMainWindow):
         loaders = {
             "home":      self._home.load,
             "installed": self._installed.load,
-            "updates":   lambda: self._updates.load(None),
+            "updates":   self._updates.load,
             "system":    self._system.load,
             "webapps":   self._webapps.load,
         }

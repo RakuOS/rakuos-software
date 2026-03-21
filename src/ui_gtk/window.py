@@ -252,12 +252,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._daemon.start()
         return False
 
-    def _on_updates_ready(self, result: dict):
+    def _tray_summary(self, result: dict) -> tuple[int, str]:
         total     = result.get("total", 0)
         pkg_count = len(result.get("packages", []))
         fp_count  = len(result.get("flatpak", []))
         img       = result.get("image_available", False)
-
         parts = []
         if pkg_count:
             parts.append(f"{pkg_count} package{'s' if pkg_count != 1 else ''}")
@@ -266,11 +265,22 @@ class MainWindow(Adw.ApplicationWindow):
         if img:
             parts.append("system image")
         summary = ", ".join(parts) + " available" if parts else ""
+        return total, summary
 
+    def _on_updates_ready(self, result: dict):
+        """Daemon check complete — update page and tray."""
+        total, summary = self._tray_summary(result)
         self._updates_page.set_updates(result)
         self._tray.set_updates(total, summary)
+        page = self._stack.get_page(self._updates_page)
+        if page:
+            page.set_needs_attention(total > 0)
+            page.set_badge_number(total)
 
-        # Update badge on Updates tab
+    def _on_page_check_done(self, result: dict):
+        """Updates page did its own fresh check — sync tray/badge."""
+        total, summary = self._tray_summary(result)
+        self._tray.set_updates(total, summary)
         page = self._stack.get_page(self._updates_page)
         if page:
             page.set_needs_attention(total > 0)

@@ -178,7 +178,13 @@ class UpdatesPage(Gtk.Box):
             "image_info":      img_info,
             "total": len(pkgs) + len(fps) + (1 if img_avail else 0),
         }
-        GLib.idle_add(self.set_updates, result)
+        GLib.idle_add(self._apply_check_result, result)
+
+    def _apply_check_result(self, result: dict):
+        """Apply a page-initiated check result — update page AND notify window for tray."""
+        self.set_updates(result)
+        self._win._on_page_check_done(result)
+        return False
 
     # ── Populate update rows ───────────────────────────────────────────────────
 
@@ -277,16 +283,18 @@ class UpdatesPage(Gtk.Box):
 
     def _finish_updates(self):
         self._busy = False
-        self._data = {}   # clear stale data so next tab visit triggers a fresh check
+        self._data = {}
         self._update_all_btn.set_label("Update All")
         self._update_all_btn.set_sensitive(True)
         if self._stack.get_visible_child_name() != "reboot_required":
             self._stack.set_visible_child_name("up_to_date")
+        # Re-check so tray badge clears immediately
+        GLib.timeout_add(600, lambda: (self._do_check(), False)[1])
         return False
 
     def _on_image_done(self, ok: bool):
         self._busy = False
-        self._data = {}   # clear stale data so next tab visit triggers a fresh check
+        self._data = {}
         if ok:
             GLib.idle_add(
                 lambda: self._stack.set_visible_child_name("reboot_required") or False)
@@ -295,6 +303,25 @@ class UpdatesPage(Gtk.Box):
                 GLib.idle_add(self._image_card.set_error)
         self._update_all_btn.set_label("Update All")
         self._update_all_btn.set_sensitive(True)
+
+    # ── Cache helpers ─────────────────────────────────────────────────────────
+
+    def _remove_from_data(self, pkgs: list[dict]):
+        """Remove completed packages from data cache and notify window for tray update."""
+        if not self._data:
+            return
+        ids = {p.get("app_id") or p.get("id", "") for p in pkgs}
+        for key in ("packages", "flatpak", "appimages"):
+            self._data[key] = [
+                p for p in self._data.get(key, [])
+                if (p.get("app_id") or p.get("id", "")) not in ids
+            ]
+        self._data["total"] = (
+            len(self._data.get("packages", []))
+            + len(self._data.get("flatpak", []))
+            + (1 if self._data.get("image_available") else 0)
+        )
+        self._win._on_page_check_done(self._data)
 
     # ── Per-type update runners ────────────────────────────────────────────────
 
@@ -318,6 +345,8 @@ class UpdatesPage(Gtk.Box):
                 ok = False
             for r in rows:
                 GLib.idle_add(r.set_done, ok)
+            if ok:
+                GLib.idle_add(self._remove_from_data, [r._item for r in rows])
             GLib.idle_add(done_cb, ok)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -342,6 +371,8 @@ class UpdatesPage(Gtk.Box):
                 print(f"[updates] flatpak error for {app_id}: {e}")
                 ok = False
             GLib.idle_add(row.set_done, ok)
+            if ok:
+                GLib.idle_add(self._remove_from_data, [row._item])
             GLib.idle_add(done_cb, ok)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -376,6 +407,8 @@ class UpdatesPage(Gtk.Box):
                 print(f"[updates] appimage error for {app_id}: {e}")
                 ok = False
             GLib.idle_add(row.set_done, ok)
+            if ok:
+                GLib.idle_add(self._remove_from_data, [row._item])
             GLib.idle_add(done_cb, ok)
 
         threading.Thread(target=_worker, daemon=True).start()
