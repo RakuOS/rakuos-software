@@ -113,9 +113,11 @@ class PackageUpdateRow(QFrame):
 
         ver_row = QHBoxLayout()
         ver_row.setSpacing(6)
-        ver = pkg.get("version", "")
-        if ver:
-            ver_row.addWidget(dimmed(QLabel(f"→  {ver}")))
+        new_ver = pkg.get("version", "")
+        cur_ver = pkg.get("current_version", "")
+        if new_ver:
+            ver_txt = f"{cur_ver}  →  {new_ver}" if cur_ver else f"→  {new_ver}"
+            ver_row.addWidget(dimmed(QLabel(ver_txt)))
         if pkg.get("is_flatpak"):
             badge = QLabel("Flatpak")
             badge.setStyleSheet(

@@ -452,12 +452,12 @@ class UpdateRow(Adw.ActionRow):
 
         import os
         self.set_title(item.get("name") or item.get("id", ""))
-        ver_from = item.get("version", item.get("current_version", ""))
-        ver_to   = item.get("new_version", item.get("available_version", ""))
-        if ver_from and ver_to:
-            self.set_subtitle(f"{ver_from} → {ver_to}")
-        elif ver_to:
-            self.set_subtitle(ver_to)
+        cur_ver = item.get("current_version", "")
+        new_ver = item.get("version", item.get("new_version", item.get("available_version", "")))
+        if cur_ver and new_ver:
+            self.set_subtitle(f"{cur_ver} → {new_ver}")
+        elif new_ver:
+            self.set_subtitle(f"→  {new_ver}")
 
         icon_img = Gtk.Image()
         icon_img.set_pixel_size(36)
