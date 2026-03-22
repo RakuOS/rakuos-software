@@ -351,11 +351,11 @@ def _get_dnf() -> list[str]:
 
 def _get_install_cmd(pkg_name: str) -> list[str]:
     """Return the full privileged install command for pkg_name."""
-    import shutil
+    import shutil, platform
     if shutil.which("rakuos"):
         return ["sudo", "/usr/libexec/rakuos/rakuos-install", pkg_name]
     mgr = _get_pkg_manager()
-    return ["sudo"] + mgr + ["install", "-y", pkg_name]
+    return ["sudo"] + mgr + ["install", "-y", "--arch", platform.machine(), pkg_name]
 
 
 def _get_remove_cmd(pkg_name: str) -> list[str]:
