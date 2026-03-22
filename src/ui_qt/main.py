@@ -444,10 +444,8 @@ class MainWindow(QMainWindow):
         """Daemon check complete — update tray and page cache."""
         total, summary = self._tray_summary(result)
         self._tray.set_updates(total, summary)
-        # Store in page cache so next tab visit renders without re-fetching
-        self._updates._last_result = result
-        # Re-render immediately if the updates tab is currently open
-        if self._stack.currentWidget() is self._updates:
+        # Always render so the page is ready regardless of which tab is open
+        if not self._updates._busy:
             self._updates._render(result)
 
     def _on_page_check_done(self, result: dict):

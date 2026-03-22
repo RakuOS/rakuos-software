@@ -143,6 +143,8 @@ class UpdatesPage(Gtk.Box):
         """Manual refresh — show loading then fetch in background."""
         if self._busy:
             return
+        if self._stack.get_visible_child_name() == "loading":
+            return  # already checking
         self._stack.set_visible_child_name("loading")
         threading.Thread(target=self._fetch_and_render, daemon=True).start()
 

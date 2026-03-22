@@ -210,8 +210,14 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_tab_changed(self, stack, _param):
         page = stack.get_visible_child()
-        if page is self._updates_page and not self._updates_page._data:
-            self._updates_page._do_check()
+        if page is self._updates_page and not self._updates_page._busy:
+            up = self._updates_page
+            if not up._data:
+                up._do_check()
+            elif up._stack.get_visible_child_name() == "loading":
+                # _data is set but UI is stuck on loading (widget was hidden
+                # when set_updates() was called) — re-apply to sync state
+                up.set_updates(up._data)
 
     def _on_nav_changed(self, nav, _param):
         depth = len(nav.get_navigation_stack())

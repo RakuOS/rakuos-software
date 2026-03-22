@@ -1069,6 +1069,31 @@ def search_dnf(query: str, limit: int = 20) -> list[dict]:
         return []
 
 
+def _is_browseable(app: dict) -> bool:
+    """Return True if an app should appear in category listings and search results.
+
+    Rules:
+    - Addons are excluded (they appear only in detail-page addon popup),
+      unless they are themselves a GUI app with user-facing categories.
+    - Apps whose pkg_name was guessed (no <pkgname> in AppStream) are excluded
+      because the package may not actually exist in any repo.
+    """
+    if app.get("pkg_name_guessed"):
+        return False
+    if app.get("is_addon"):
+        # Allow addon through only if it has a real standalone-app category.
+        # System/Utility alone indicates a DE module (KDE Plasma widget, GNOME
+        # Shell extension, etc.) which should only appear in the detail addon popup.
+        cats = [c.lower() for c in app.get("categories", [])]
+        _STANDALONE_CATS = {
+            "game", "network", "audiovideo", "audio", "video", "graphics",
+            "office", "development", "education", "science", "accessibility",
+            "webbrowser", "email", "chat", "instantmessaging",
+        }
+        return bool(cats and any(c in _STANDALONE_CATS for c in cats))
+    return True
+
+
 def search_packages(query: str, limit: int = 40) -> list[dict]:
     """Search AppStream data by name/summary/id/keywords, supplemented by DNF.
 
@@ -1083,6 +1108,8 @@ def search_packages(query: str, limit: int = 40) -> list[dict]:
     q = query.lower()
     scored = []
     for app in apps.values():
+        if not _is_browseable(app):
+            continue
         name_lc    = app.get("name", "").lower()
         summary_lc = app.get("summary", "").lower()
         pkg_lc     = app.get("pkg_name", "").lower()
@@ -1125,6 +1152,8 @@ def get_by_category(category: str, limit: int = 40, offset: int = 0,
     cat_lc    = category.lower()
     parent_lc = parent_cat.lower() if parent_cat else ""
     for app in apps.values():
+        if not _is_browseable(app):
+            continue
         if source != "all" and app["source"] != source:
             continue
         cats_lc = [c.lower() for c in app["categories"]]
