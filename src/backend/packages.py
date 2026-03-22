@@ -188,6 +188,18 @@ def _get_system_lang() -> str:
 # ── Module-level locale constants (evaluated once at import) ──────────────────
 _SYSTEM_LOCALE = _get_system_lang()              # e.g. "en_US", "de_DE", "pt_BR"
 SYSTEM_LANG    = _SYSTEM_LOCALE.split("_")[0].lower()  # e.g. "en", "de", "pt"
+
+def _get_fedora_version() -> str:
+    try:
+        with open("/etc/os-release") as f:
+            for line in f:
+                if line.startswith("VERSION_ID="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except Exception:
+        pass
+    return "43"
+
+_FEDORA_VER = _get_fedora_version()
 # Normalised forms used for by_lang_full dict lookups (xml:lang is lowercased)
 _SYSLOCALE_US  = _SYSTEM_LOCALE.lower()                     # "en_us", "pt_br"
 _SYSLOCALE_HYP = _SYSTEM_LOCALE.lower().replace("_", "-")   # "en-us", "pt-br"
@@ -373,6 +385,10 @@ ICON_DIRS = [
     "/usr/share/swcatalog/icons/fedora/128x128",
     "/usr/share/swcatalog/icons/rpmfusion-free-43/64x64",
     "/usr/share/swcatalog/icons/rpmfusion-nonfree-43/64x64",
+    # Terra (fyraLabs) repos — version read from os-release at import time
+    *[f"/usr/share/swcatalog/icons/terra{_FEDORA_VER}{suffix}/{size}"
+      for suffix in ("", "-mesa", "-nvidia", "-extras", "-multimedia")
+      for size in ("64x64", "128x128")],
     "/var/lib/flatpak/appstream/flathub/x86_64/active/icons/64x64",
     "/var/lib/flatpak/appstream/flathub/x86_64/active/icons/128x128",
 ]
@@ -597,6 +613,11 @@ def _load_appstream() -> dict:
                     if fname.endswith(".gz"):
                         with gzip.open(fpath, "rt", encoding="utf-8", errors="ignore") as fh:
                             tree = ET.parse(fh)
+                    elif fname.endswith(".zst"):
+                        import zstandard as zstd
+                        with open(fpath, "rb") as fh:
+                            data = zstd.ZstdDecompressor().stream_reader(fh)
+                            tree = ET.parse(data)
                     elif fname.endswith(".xml"):
                         with open(fpath, "rt", encoding="utf-8", errors="ignore") as fh:
                             tree = ET.parse(fh)
