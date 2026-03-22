@@ -705,8 +705,13 @@ def _parse_component(comp, source: str = "native") -> Optional[dict]:
     """Parse a single AppStream component element."""
     kind = comp.get("type", "")
     is_addon = (kind == "addon")
-    if kind not in ("desktop", "desktop-application", "console-application", "", "addon"):
+    if kind not in ("desktop", "desktop-application", "console-application", "", "addon", "runtime", "generic", "codec"):
         return None
+    # For non-standard types, only include if they have categories (real user-facing apps)
+    if kind in ("runtime", "generic", "codec"):
+        cats_el = comp.find("categories")
+        if cats_el is None or not cats_el.findall("category"):
+            return None
 
     app_id = (comp.findtext("id") or "").strip()
     if not app_id:
