@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "crates/backend/appstream",
+    "crates/backend/flatpak",
+    "crates/backend/packages",
+    "crates/backend/updates",
+    "crates/backend/webapps",
+    "crates/backend/appimages",
+    "crates/backend/firmware",
+    "crates/backend/home",
+    "crates/ui-gtk",
+    "crates/ui-qt",
+    "crates/ui-cosmic",
+    "crates/daemon",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+authors = ["RakuOS Project"]
+license = "GPL-3.0-or-later"
+edition = "2021"
+
+[workspace.dependencies]
+# Backend shared deps
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+# Backend crates (used by UI crates)
+rakuos-appstream = { path = "crates/backend/appstream" }
+rakuos-flatpak   = { path = "crates/backend/flatpak" }
+rakuos-packages  = { path = "crates/backend/packages" }
+rakuos-updates   = { path = "crates/backend/updates" }
+rakuos-webapps   = { path = "crates/backend/webapps" }
+rakuos-appimages = { path = "crates/backend/appimages" }
+rakuos-firmware  = { path = "crates/backend/firmware" }
+rakuos-home      = { path = "crates/backend/home" }

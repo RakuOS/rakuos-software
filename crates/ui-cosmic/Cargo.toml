@@ -1,0 +1,25 @@
+[package]
+name = "rakuos-software-cosmic"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rakuos-software-cosmic"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+serde_json = { workspace = true }
+rakuos-appstream = { workspace = true }
+rakuos-flatpak   = { workspace = true }
+rakuos-packages  = { workspace = true }
+rakuos-updates   = { workspace = true }
+rakuos-webapps   = { workspace = true }
+rakuos-appimages = { workspace = true }
+rakuos-firmware  = { workspace = true }
+rakuos-home      = { workspace = true }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", features = ["wayland", "tokio"] }
