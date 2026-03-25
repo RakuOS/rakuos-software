@@ -18,6 +18,57 @@ Item {
                 screenshotModel.append({ url: app.screenshots[i] });
             }
         }
+        if (sourceSelector.visible) {
+            sourceSelector.currentIndex = 0;
+        }
+
+        // If this is partial data (HomeApp from home/search card has no
+        // 'installed' field), fetch the full record in the background.
+        if (app && app.id && typeof app.installed === 'undefined') {
+            backend.loadAppById(app.id);
+            detailFetchTimer.start();
+        }
+    }
+
+    // Async full-detail fetch — fires when detail page receives partial data
+    Timer {
+        id: detailFetchTimer
+        interval: 300
+        repeat: true
+        onTriggered: {
+            backend.pollOp();
+            if (!backend.opRunning) {
+                detailFetchTimer.stop();
+                if (backend.opResult === 1) {
+                    var json = backend.readLog();
+                    try {
+                        var fullApp = JSON.parse(json);
+                        if (fullApp && fullApp.id) {
+                            detailPage.app = fullApp;
+                            if (fullApp.screenshots && fullApp.screenshots.length > 0
+                                    && screenshotModel.count === 0) {
+                                for (var i = 0; i < Math.min(fullApp.screenshots.length, 8); i++) {
+                                    screenshotModel.append({ url: fullApp.screenshots[i] });
+                                }
+                            }
+                            if (sourceSelector.visible) {
+                                sourceSelector.currentIndex = 0;
+                            }
+                        }
+                    } catch(e) {}
+                }
+            }
+        }
+    }
+
+    // Returns the currently selected source object
+    function selectedSource() {
+        if (!app) return null;
+        if (Array.isArray(app.sources) && app.sources.length > 0) {
+            var idx = sourceSelector.currentIndex;
+            return app.sources[idx] || app.sources[0];
+        }
+        return app;
     }
 
     property int screenshotIndex: 0
@@ -52,17 +103,37 @@ Item {
                     Layout.fillWidth: true
                 }
 
+                // Source selector — shown when both native and Flatpak are available
+                ComboBox {
+                    id: sourceSelector
+                    visible: app != null && Array.isArray(app.sources) && app.sources.length > 1
+                    width: 160
+                    model: {
+                        if (!app || !Array.isArray(app.sources)) return [];
+                        return app.sources.map(function(s) {
+                            return s.label + (s.installed ? " ✓" : "");
+                        });
+                    }
+                }
+
                 // Install / Remove button
                 Button {
-                    visible: app !== null
-                    text: app && app.installed ? "Remove" : "Install"
-                    highlighted: app && !app.installed
+                    id: installBtn
+                    visible: app != null
+                    property var src: detailPage.selectedSource()
+                    Connections {
+                        target: sourceSelector
+                        function onCurrentIndexChanged() { installBtn.src = detailPage.selectedSource(); }
+                    }
+                    text: src != null && src.installed === true ? "Remove" : "Install"
+                    highlighted: src != null && src.installed !== true
                     onClicked: {
-                        if (!app) return;
-                        if (app.installed) {
-                            backend.removeApp(app.id || "", app.source || "");
+                        var s = detailPage.selectedSource();
+                        if (!s) return;
+                        if (s.installed) {
+                            backend.removeApp(s.id || "", s.source || "");
                         } else {
-                            backend.installApp(app.id || "", app.source || "");
+                            backend.installApp(s.id || "", s.source || "");
                         }
                     }
                 }
@@ -95,7 +166,6 @@ Item {
                         anchors { left: parent.left; right: parent.right; top: parent.top; leftMargin: 28; rightMargin: 28; topMargin: 8 }
                         spacing: 20
 
-                        // App icon (80px)
                         AppIcon {
                             iconPath: app ? (app.icon_path || "") : ""
                             iconName: app ? (app.name || app.id || "?") : "?"
@@ -103,7 +173,6 @@ Item {
                             Layout.alignment: Qt.AlignTop
                         }
 
-                        // Name / summary / meta
                         ColumnLayout {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignTop
@@ -133,13 +202,13 @@ Item {
                                 visible: text !== ""
                             }
 
-                            // Meta row: version, license, source badge
+                            // Meta row: source badge, version, license
                             RowLayout {
                                 spacing: 12
                                 Layout.topMargin: 4
 
                                 Rectangle {
-                                    visible: app && app.source
+                                    visible: app != null && (app.source || "") !== ""
                                     radius: 4
                                     color: {
                                         if (!app) return palette.button;
@@ -194,7 +263,6 @@ Item {
                     height: screenshotModel.count > 0 ? 320 : 0
                     visible: screenshotModel.count > 0
 
-                    // Main screenshot
                     Image {
                         id: mainShot
                         anchors { left: parent.left; right: parent.right; top: parent.top; margins: 28 }
@@ -205,7 +273,6 @@ Item {
                         clip: true
                     }
 
-                    // Prev arrow
                     Button {
                         anchors { left: parent.left; verticalCenter: mainShot.verticalCenter; leftMargin: 34 }
                         text: "‹"
@@ -220,7 +287,6 @@ Item {
                         }
                     }
 
-                    // Next arrow
                     Button {
                         anchors { right: parent.right; verticalCenter: mainShot.verticalCenter; rightMargin: 34 }
                         text: "›"
@@ -235,18 +301,15 @@ Item {
                         }
                     }
 
-                    // Dot indicators
                     Row {
                         anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter }
                         spacing: 8
-
                         Repeater {
                             model: screenshotModel.count
                             Label {
                                 text: "●"
                                 font.pixelSize: 10
-                                color: index === detailPage.screenshotIndex
-                                    ? palette.highlight : palette.mid
+                                color: index === detailPage.screenshotIndex ? palette.highlight : palette.mid
                             }
                         }
                     }
@@ -259,7 +322,7 @@ Item {
                     width: parent.width - 56
                     anchors.horizontalCenter: parent.horizontalCenter
                     spacing: 8
-                    visible: app && app.description && app.description !== ""
+                    visible: app != null && (app.description || "") !== ""
 
                     Label {
                         text: "About this app"
@@ -283,15 +346,15 @@ Item {
                     width: parent.width - 56
                     anchors.horizontalCenter: parent.horizontalCenter
                     spacing: 12
-                    visible: app !== null
+                    visible: app != null
 
                     Repeater {
                         model: {
                             if (!app) return [];
                             var cards = [];
-                            if (app.url_homepage) cards.push({ label: "Website", value: app.url_homepage, link: true });
-                            if (app.package_name) cards.push({ label: "Package", value: app.package_name, link: false });
-                            if (app.developer) cards.push({ label: "Developer", value: app.developer, link: false });
+                            if (app.url_homepage) cards.push({ label: "Website", value: app.url_homepage });
+                            if (app.package_name) cards.push({ label: "Package", value: app.package_name });
+                            if (app.developer)    cards.push({ label: "Developer", value: app.developer });
                             return cards;
                         }
 
@@ -306,18 +369,8 @@ Item {
                             Column {
                                 anchors { fill: parent; margins: 10 }
                                 spacing: 4
-
-                                Label {
-                                    text: modelData.label
-                                    font.pixelSize: 10
-                                    color: palette.mid
-                                }
-                                Label {
-                                    text: modelData.value
-                                    font.pixelSize: 11
-                                    elide: Text.ElideRight
-                                    width: parent.width
-                                }
+                                Label { text: modelData.label; font.pixelSize: 10; color: palette.mid }
+                                Label { text: modelData.value; font.pixelSize: 11; elide: Text.ElideRight; width: parent.width }
                             }
                         }
                     }

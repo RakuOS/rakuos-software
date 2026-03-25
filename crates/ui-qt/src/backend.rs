@@ -25,6 +25,14 @@ fn settings_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".config/rakuos/software-settings.json")
 }
 
+fn append_log(text: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(log_path()) {
+        let _ = f.write_all(text.as_bytes());
+        let _ = f.write_all(b"\n");
+    }
+}
+
 // ── Backend QObject ───────────────────────────────────────────────────────────
 
 #[derive(QObject, Default)]
@@ -64,7 +72,7 @@ pub struct SoftwareBackend {
     // Shared state between Rust threads and Qt
     shared: Option<Arc<SharedState>>,
 
-    // ── Methods ───────────────────────────────────────────────────────────────
+    // ── Navigation ────────────────────────────────────────────────────────────
 
     navigate: qt_method!(fn navigate(&mut self, page: i32) {
         self.currentPage = page;
@@ -112,10 +120,7 @@ pub struct SoftwareBackend {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(async {
-                let picks   = rakuos_home::get_picks().await;
-                let popular = rakuos_home::get_popular().await;
-                let updated = rakuos_home::get_recently_updated().await;
-                let new     = rakuos_home::get_new_apps().await;
+                let (picks, popular, updated, new) = rakuos_home::load_all().await;
                 serde_json::json!({
                     "picks":   picks,
                     "popular": popular,
@@ -206,6 +211,15 @@ pub struct SoftwareBackend {
             for a in rakuos_webapps::search(&query) {
                 results.push(serde_json::to_value(a).unwrap_or_default());
             }
+            // Search AppImages
+            let q_lower = query.to_lowercase();
+            for a in rakuos_appimages::get_installed() {
+                let name = a.name.to_lowercase();
+                let summary = a.description.to_lowercase();
+                if name.contains(&q_lower) || summary.contains(&q_lower) {
+                    results.push(serde_json::to_value(a).unwrap_or_default());
+                }
+            }
 
             let _ = std::fs::write(
                 log_path(),
@@ -244,13 +258,13 @@ pub struct SoftwareBackend {
 
             let _ = std::fs::write(log_path(), "Checking for updates...\n");
 
-            // Check packages
+            // Check packages via rakuos-update script
             let pkg_out = Command::new("/usr/libexec/rakuos/rakuos-update")
                 .arg("check")
                 .output()
                 .ok();
 
-            // Check flatpak
+            // Check flatpak via rakuos-update script
             let fp_out = Command::new("/usr/libexec/rakuos/rakuos-update")
                 .arg("check-flatpak")
                 .output()
@@ -266,10 +280,21 @@ pub struct SoftwareBackend {
                 .and_then(|v| v["updates"].as_array().cloned())
                 .unwrap_or_default();
 
+            // Check image update via Rust async
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let image_info = rt.block_on(rakuos_updates::check_for_update());
+            let image_available = image_info.available;
+
+            let total = pkg_updates.len() + fp_updates.len()
+                + if image_available { 1 } else { 0 };
+
             let result = serde_json::json!({
-                "packages": pkg_updates,
-                "flatpak":  fp_updates,
-                "total": pkg_updates.len() + fp_updates.len(),
+                "packages":        pkg_updates,
+                "flatpak":         fp_updates,
+                "appimages":       [],
+                "image_available": image_available,
+                "image_info":      serde_json::to_value(&image_info).unwrap_or_default(),
+                "total": total,
             });
 
             let _ = std::fs::write(
@@ -282,6 +307,79 @@ pub struct SoftwareBackend {
         });
     }),
 
+    // ── Image update ─────────────────────────────────────────────────────────
+
+    upgradeImage: qt_method!(fn upgradeImage(&mut self, update_type: QString, repo_url: QString, new_tag: QString) {
+        let update_type = update_type.to_string();
+        let repo_url = repo_url.to_string();
+        let new_tag = new_tag.to_string();
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), "Starting image upgrade...\n");
+            let mut exit_code = 1i32;
+            for line in rakuos_updates::upgrade_image_stream(&update_type, &repo_url, &new_tag) {
+                if let Some(code) = line.strip_prefix("__done__") {
+                    exit_code = code.trim().parse().unwrap_or(1);
+                } else {
+                    if let Some(pct) = parse_layers_progress(&line) {
+                        shared.progress.store(pct, Ordering::Relaxed);
+                    }
+                    if !line.is_empty() { append_log(&line); }
+                }
+            }
+            shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    rollbackSystem: qt_method!(fn rollbackSystem(&mut self) {
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), "Rolling back...\n");
+            let mut exit_code = 1i32;
+            for line in rakuos_updates::rollback_stream() {
+                if let Some(code) = line.strip_prefix("__done__") {
+                    exit_code = code.trim().parse().unwrap_or(1);
+                } else {
+                    if !line.is_empty() { append_log(&line); }
+                }
+            }
+            shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    rebootSystem: qt_method!(fn rebootSystem(&mut self) {
+        std::thread::spawn(|| {
+            rakuos_updates::schedule_reboot();
+        });
+    }),
+
+    getOverlayStatus: qt_method!(fn getOverlayStatus(&mut self) -> QString {
+        let status = rakuos_updates::get_overlay_status();
+        serde_json::to_string(&status).unwrap_or_default().into()
+    }),
+
+    upgradePackages: qt_method!(fn upgradePackages(&mut self) {
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), "Upgrading overlay packages...\n");
+            let mut exit_code = 1i32;
+            for line in rakuos_updates::upgrade_packages_stream() {
+                if let Some(code) = line.strip_prefix("__done__") {
+                    exit_code = code.trim().parse().unwrap_or(1);
+                } else {
+                    if !line.is_empty() { append_log(&line); }
+                }
+            }
+            shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
     // ── Install / Remove ─────────────────────────────────────────────────────
 
     installApp: qt_method!(fn installApp(&mut self, id: QString, source: QString) {
@@ -290,16 +388,9 @@ pub struct SoftwareBackend {
         self.start_op();
         let shared = self.get_shared();
         std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader, Write};
+            use std::io::{BufRead, BufReader};
             use std::process::{Command, Stdio};
             let _ = std::fs::write(log_path(), format!("Installing {}...\n", id));
-
-            let append = |text: &str| {
-                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(log_path()) {
-                    let _ = f.write_all(text.as_bytes());
-                    let _ = f.write_all(b"\n");
-                }
-            };
 
             let (mut child, ok) = match source.as_str() {
                 "flatpak" => {
@@ -310,12 +401,12 @@ pub struct SoftwareBackend {
                         .spawn();
                     match c {
                         Ok(child) => (Some(child), true),
-                        Err(e)    => { append(&e.to_string()); (None, false) }
+                        Err(e)    => { append_log(&e.to_string()); (None, false) }
                     }
                 }
                 "webapp" => {
                     let (ok, msg) = rakuos_webapps::install(&id);
-                    append(&msg);
+                    append_log(&msg);
                     (None, ok)
                 }
                 _ => {
@@ -326,7 +417,7 @@ pub struct SoftwareBackend {
                         .spawn();
                     match c {
                         Ok(child) => (Some(child), true),
-                        Err(e)    => { append(&e.to_string()); (None, false) }
+                        Err(e)    => { append_log(&e.to_string()); (None, false) }
                     }
                 }
             };
@@ -334,7 +425,7 @@ pub struct SoftwareBackend {
             if let Some(ref mut child) = child {
                 if let Some(stdout) = child.stdout.take() {
                     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                        if !line.is_empty() { append(&line); }
+                        if !line.is_empty() { append_log(&line); }
                     }
                 }
                 let success = child.wait().map(|s| s.success()).unwrap_or(false);
@@ -352,16 +443,8 @@ pub struct SoftwareBackend {
         self.start_op();
         let shared = self.get_shared();
         std::thread::spawn(move || {
-            use std::io::Write;
             use std::process::Command;
             let _ = std::fs::write(log_path(), format!("Removing {}...\n", id));
-
-            let append = |text: &str| {
-                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(log_path()) {
-                    let _ = f.write_all(text.as_bytes());
-                    let _ = f.write_all(b"\n");
-                }
-            };
 
             let ok = match source.as_str() {
                 "flatpak" => {
@@ -370,18 +453,18 @@ pub struct SoftwareBackend {
                         .output()
                         .ok();
                     if let Some(o) = &out {
-                        append(&String::from_utf8_lossy(&o.stdout));
+                        append_log(&String::from_utf8_lossy(&o.stdout));
                     }
                     out.map(|o| o.status.success()).unwrap_or(false)
                 }
                 "webapp" => {
                     let (ok, msg) = rakuos_webapps::uninstall(&id);
-                    append(&msg);
+                    append_log(&msg);
                     ok
                 }
                 "appimage" => {
                     let (ok, msg) = rakuos_appimages::uninstall(&id);
-                    append(&msg);
+                    append_log(&msg);
                     ok
                 }
                 _ => {
@@ -390,7 +473,7 @@ pub struct SoftwareBackend {
                         .output()
                         .ok();
                     if let Some(o) = &out {
-                        append(&String::from_utf8_lossy(&o.stdout));
+                        append_log(&String::from_utf8_lossy(&o.stdout));
                     }
                     out.map(|o| o.status.success()).unwrap_or(false)
                 }
@@ -408,7 +491,18 @@ pub struct SoftwareBackend {
         let shared = self.get_shared();
         std::thread::spawn(move || {
             let status = rakuos_updates::get_system_status();
-            let json = serde_json::to_string(&status).unwrap_or_default();
+            let overlay = rakuos_updates::get_overlay_status();
+            let result = serde_json::json!({
+                "image":     status.image,
+                "version":   status.version,
+                "digest":    status.digest,
+                "timestamp": status.timestamp,
+                "error":     status.error,
+                "overlay_packages": overlay.packages,
+                "overlay_count": overlay.package_count,
+                "overlay_dirty": overlay.is_dirty,
+            });
+            let json = serde_json::to_string(&result).unwrap_or_default();
             let _ = std::fs::write(log_path(), &json);
             shared.result.store(1, Ordering::Relaxed);
             shared.running.store(false, Ordering::Relaxed);
@@ -419,16 +513,9 @@ pub struct SoftwareBackend {
         self.start_op();
         let shared = self.get_shared();
         std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader, Write};
+            use std::io::{BufRead, BufReader};
             use std::process::{Command, Stdio};
             let _ = std::fs::write(log_path(), "Starting system upgrade...\n");
-
-            let append = |text: &str| {
-                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(log_path()) {
-                    let _ = f.write_all(text.as_bytes());
-                    let _ = f.write_all(b"\n");
-                }
-            };
 
             let mut child = match Command::new("pkexec")
                 .args(["bootc", "upgrade"])
@@ -438,7 +525,7 @@ pub struct SoftwareBackend {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    append(&e.to_string());
+                    append_log(&e.to_string());
                     shared.result.store(2, Ordering::Relaxed);
                     shared.running.store(false, Ordering::Relaxed);
                     return;
@@ -447,11 +534,10 @@ pub struct SoftwareBackend {
 
             if let Some(stdout) = child.stdout.take() {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    // Parse layers progress: layers[N/M]
                     if let Some(pct) = parse_layers_progress(&line) {
                         shared.progress.store(pct, Ordering::Relaxed);
                     }
-                    if !line.is_empty() { append(&line); }
+                    if !line.is_empty() { append_log(&line); }
                 }
             }
 
@@ -459,6 +545,78 @@ pub struct SoftwareBackend {
             shared.result.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
             shared.running.store(false, Ordering::Relaxed);
         });
+    }),
+
+    // ── Flatpak remote management ─────────────────────────────────────────────
+
+    getFlatpakRemotes: qt_method!(fn getFlatpakRemotes(&mut self) -> QString {
+        let remotes = rakuos_flatpak::get_remotes();
+        let has_flathub = rakuos_flatpak::has_flathub();
+        serde_json::json!({ "remotes": remotes, "has_flathub": has_flathub })
+            .to_string().into()
+    }),
+
+    addFlatpakRemote: qt_method!(fn addFlatpakRemote(&mut self, name: QString, url: QString, system: bool) -> QString {
+        let (ok, msg) = rakuos_flatpak::add_remote(&name.to_string(), &url.to_string(), system);
+        serde_json::json!({ "ok": ok, "msg": msg }).to_string().into()
+    }),
+
+    addFlathub: qt_method!(fn addFlathub(&mut self, system: bool) -> QString {
+        let (ok, msg) = rakuos_flatpak::add_flathub(system);
+        serde_json::json!({ "ok": ok, "msg": msg }).to_string().into()
+    }),
+
+    removeFlatpakRemote: qt_method!(fn removeFlatpakRemote(&mut self, name: QString, system: bool) -> QString {
+        let (ok, msg) = rakuos_flatpak::remove_remote(&name.to_string(), system);
+        serde_json::json!({ "ok": ok, "msg": msg }).to_string().into()
+    }),
+
+    setFlatpakRemoteEnabled: qt_method!(fn setFlatpakRemoteEnabled(&mut self, name: QString, enabled: bool, system: bool) -> QString {
+        let (ok, msg) = rakuos_flatpak::set_remote_enabled(&name.to_string(), enabled, system);
+        serde_json::json!({ "ok": ok, "msg": msg }).to_string().into()
+    }),
+
+    // ── Firmware management ───────────────────────────────────────────────────
+
+    getFirmwareData: qt_method!(fn getFirmwareData(&mut self) -> QString {
+        let available = rakuos_firmware::fwupd_available();
+        let remotes     = if available { rakuos_firmware::get_remotes()     } else { vec![] };
+        let vendor_dirs = if available { rakuos_firmware::get_vendor_dirs() } else { vec![] };
+        let updates     = if available { rakuos_firmware::get_updates()     } else { vec![] };
+        serde_json::json!({
+            "available":   available,
+            "remotes":     remotes,
+            "vendor_dirs": vendor_dirs,
+            "updates":     updates,
+        }).to_string().into()
+    }),
+
+    setFirmwareRemoteEnabled: qt_method!(fn setFirmwareRemoteEnabled(&mut self, id: QString, enabled: bool) -> QString {
+        let (ok, msg) = rakuos_firmware::set_remote_enabled(&id.to_string(), enabled);
+        serde_json::json!({ "ok": ok, "msg": msg }).to_string().into()
+    }),
+
+    refreshFirmware: qt_method!(fn refreshFirmware(&mut self) {
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), "Refreshing firmware metadata...\n");
+            let mut exit_code = 1i32;
+            for line in rakuos_firmware::refresh_stream() {
+                if let Some(code) = line.strip_prefix("__done__") {
+                    exit_code = code.trim().parse().unwrap_or(1);
+                } else {
+                    if !line.is_empty() { append_log(&line); }
+                }
+            }
+            shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    checkFirmwareUpdates: qt_method!(fn checkFirmwareUpdates(&mut self) -> QString {
+        let updates = rakuos_firmware::get_updates();
+        serde_json::to_string(&updates).unwrap_or_default().into()
     }),
 
     // ── Settings ─────────────────────────────────────────────────────────────

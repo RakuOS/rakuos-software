@@ -10,6 +10,25 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+// ── Global in-memory cache ────────────────────────────────────────────────────
+// Parsed once on first call, shared across all callers via Arc (no re-parsing).
+
+static APPSTREAM_CACHE: OnceLock<Arc<HashMap<String, AppInfo>>> = OnceLock::new();
+
+/// Returns a reference-counted handle to the shared appstream data.
+/// First call parses all XML files; subsequent calls return in nanoseconds.
+pub fn get_appstream() -> Arc<HashMap<String, AppInfo>> {
+    APPSTREAM_CACHE
+        .get_or_init(|| Arc::new(load_appstream_inner().unwrap_or_default()))
+        .clone()
+}
+
+/// Compatibility wrapper — prefer get_appstream() to avoid cloning the map.
+pub fn load_appstream() -> Result<HashMap<String, AppInfo>> {
+    Ok((*get_appstream()).clone())
+}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -89,63 +108,58 @@ fn get_fedora_version() -> String {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Glob for .xml.gz files under a directory tree (up to 3 levels deep).
-fn scan_gz_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    if !dir.exists() {
+/// Returns true if a path looks like an AppStream XML file (.xml or .xml.gz).
+fn is_appstream_file(p: &Path) -> bool {
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name.ends_with(".xml.gz") || name.ends_with(".xml")
+}
+
+/// Recursively scan a directory tree for AppStream XML files (.xml and .xml.gz).
+/// Stops recursing at `max_depth` to avoid traversing huge trees.
+fn scan_appstream_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth == 0 || !dir.exists() {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            // one level deeper (e.g. flathub/x86_64/active/)
-            let Ok(sub) = std::fs::read_dir(&p) else { continue };
-            for se in sub.flatten() {
-                let sp = se.path();
-                if sp.is_dir() {
-                    let Ok(sub2) = std::fs::read_dir(&sp) else { continue };
-                    for se2 in sub2.flatten() {
-                        let sp2 = se2.path();
-                        if sp2.extension().and_then(|e| e.to_str()) == Some("gz") {
-                            out.push(sp2);
-                        }
-                    }
-                } else if sp.extension().and_then(|e| e.to_str()) == Some("gz") {
-                    out.push(sp);
-                }
-            }
-        } else if p.extension().and_then(|e| e.to_str()) == Some("gz") {
+            scan_appstream_files(&p, out, depth - 1);
+        } else if is_appstream_file(&p) {
             out.push(p);
         }
     }
 }
 
-/// Load all AppStream metadata from all known dirs.
-/// Returns a map of app_id → AppInfo.
-pub fn load_appstream() -> Result<HashMap<String, AppInfo>> {
+/// Internal: parse all AppStream XML files from disk. Called at most once.
+fn load_appstream_inner() -> Result<HashMap<String, AppInfo>> {
     let mut apps: HashMap<String, AppInfo> = HashMap::new();
-    let mut gz_files: Vec<PathBuf> = Vec::new();
+    let mut xml_files: Vec<PathBuf> = Vec::new();
 
-    // RakuOS custom entries (highest priority)
-    scan_gz_files(Path::new(RAKUOS_APPSTREAM_DIR), &mut gz_files);
+    // RakuOS custom entries (highest priority, plain .xml)
+    scan_appstream_files(Path::new(RAKUOS_APPSTREAM_DIR), &mut xml_files, 3);
 
-    // System swcatalog (native + possibly flathub)
-    scan_gz_files(Path::new(SWCATALOG_DIR), &mut gz_files);
+    // System swcatalog (native + terra; mix of .xml and .xml.gz)
+    scan_appstream_files(Path::new(SWCATALOG_DIR), &mut xml_files, 2);
 
     // app-info dirs
-    scan_gz_files(Path::new(APP_INFO_XMLS), &mut gz_files);
-    scan_gz_files(Path::new(APP_INFO_XMLS_CACHE), &mut gz_files);
+    scan_appstream_files(Path::new(APP_INFO_XMLS), &mut xml_files, 2);
+    scan_appstream_files(Path::new(APP_INFO_XMLS_CACHE), &mut xml_files, 2);
 
-    // Flatpak AppStream: system-wide
-    scan_gz_files(Path::new("/var/lib/flatpak/appstream"), &mut gz_files);
+    // Flatpak AppStream: system-wide (flathub/x86_64/active/ is 3 levels deep)
+    scan_appstream_files(Path::new("/var/lib/flatpak/appstream"), &mut xml_files, 5);
 
     // Flatpak AppStream: per-user
     if let Ok(home) = std::env::var("HOME") {
         let user_fp = PathBuf::from(home).join(".local/share/flatpak/appstream");
-        scan_gz_files(&user_fp, &mut gz_files);
+        scan_appstream_files(&user_fp, &mut xml_files, 5);
     }
 
-    for path in &gz_files {
+    // Prefer .xml.gz over .xml when both exist for the same base name
+    // (flatpak ships both; prefer the gz to avoid double-parsing)
+    let xml_files = dedup_prefer_gz(xml_files);
+
+    for path in &xml_files {
         if let Err(e) = parse_catalog_file(path, &mut apps) {
             log::warn!("Failed to parse {:?}: {}", path, e);
         }
@@ -182,9 +196,37 @@ pub fn load_appstream() -> Result<HashMap<String, AppInfo>> {
     log::info!(
         "AppStream: loaded {} apps from {} files",
         apps.len(),
-        gz_files.len()
+        xml_files.len()
     );
     Ok(apps)
+}
+
+/// When a directory ships both `appstream.xml` and `appstream.xml.gz`,
+/// keep only the `.gz` to avoid parsing the same data twice.
+fn dedup_prefer_gz(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    use std::collections::HashSet;
+    // Collect all .gz base paths (without the .gz suffix) for fast lookup
+    let gz_bases: HashSet<PathBuf> = files
+        .iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("gz"))
+        .filter_map(|p| {
+            // "appstream.xml.gz" → strip ".gz" → "appstream.xml"
+            let s = p.to_str()?;
+            Some(PathBuf::from(s.strip_suffix(".gz")?))
+        })
+        .collect();
+
+    files
+        .into_iter()
+        .filter(|p| {
+            // If this is a plain .xml and a .gz version exists, skip it
+            let ext = p.extension().and_then(|e| e.to_str());
+            if ext == Some("xml") && gz_bases.contains(p.as_path()) {
+                return false;
+            }
+            true
+        })
+        .collect()
 }
 
 /// Resolve the local icon path for an app, checking all icon dirs.
@@ -271,24 +313,27 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
-    let file = File::open(path)?;
-    let gz = GzDecoder::new(BufReader::new(file));
-    let mut reader = Reader::from_reader(BufReader::new(gz));
-    reader.config_mut().trim_text(true);
-
-    // Determine source tag from filename
-    let filename = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let source = if filename.contains("flathub") || filename.contains("flatpak") {
+    // Determine source from the full path (not just filename — flatpak ships
+    // a generic "appstream.xml.gz" that only reveals its origin via directory)
+    let path_str = path.to_string_lossy().to_lowercase();
+    let source = if path_str.contains("flathub") || path_str.contains("flatpak") {
         "flatpak"
-    } else if filename.contains("terra") {
+    } else if path_str.contains("terra") {
         "terra"
     } else {
         "native"
     };
+
+    let file = File::open(path)?;
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let mut reader = if file_name.ends_with(".xml.gz") {
+        let gz = GzDecoder::new(BufReader::new(file));
+        Reader::from_reader(BufReader::new(Box::new(gz) as Box<dyn std::io::Read>))
+    } else {
+        // Plain .xml
+        Reader::from_reader(BufReader::new(Box::new(file) as Box<dyn std::io::Read>))
+    };
+    reader.config_mut().trim_text(true);
 
     let mut buf = Vec::new();
     let mut current: Option<AppInfo> = None;

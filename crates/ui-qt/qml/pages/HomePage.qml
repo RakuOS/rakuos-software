@@ -6,9 +6,8 @@ import "../components"
 Item {
     id: homePage
 
-    // Called when this page becomes current
     function activate() {
-        if (homeData === null) {
+        if (homeData === null && !loading) {
             loadData();
         }
     }
@@ -17,6 +16,7 @@ Item {
     property bool loading: false
 
     function loadData() {
+        if (loading) return;
         loading = true;
         homeData = null;
         backend.loadHome();
@@ -37,14 +37,13 @@ Item {
                     try {
                         homeData = JSON.parse(json);
                     } catch(e) {
-                        homeData = {};
+                        homeData = null;
                     }
                 }
             }
         }
     }
 
-    // ── Section builder from JSON array ─────────────────────────────────────
     function appsForSection(key) {
         if (!homeData) return [];
         var arr = homeData[key];
@@ -61,23 +60,26 @@ Item {
             width: parent.width
             spacing: 0
             topPadding: 20
-            bottomPadding: 20
+            bottomPadding: 24
 
-            // Loading / error state
+            // Loading indicator
             Item {
                 width: parent.width
-                height: 60
+                height: 80
                 visible: loading
 
                 Row {
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator { running: loading; implicitWidth: 28; implicitHeight: 28 }
-                    Label { text: "Loading home page…"; anchors.verticalCenter: parent.verticalCenter }
+                    Label {
+                        text: "Loading home page…"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
             }
 
-            // Sections
+            // Sections: picks, popular, updated, new
             Repeater {
                 model: [
                     { key: "picks",   title: "Editor's Picks"  },
@@ -89,7 +91,8 @@ Item {
                 Column {
                     width: homePage.width
                     spacing: 0
-                    visible: !loading && homeData !== null && appsForSection(modelData.key).length > 0
+                    visible: !loading && homeData !== null
+                             && appsForSection(modelData.key).length > 0
 
                     // Section header
                     Item {
@@ -97,86 +100,72 @@ Item {
                         height: 44
 
                         Label {
-                            anchors { left: parent.left; leftMargin: 24; verticalCenter: parent.verticalCenter }
+                            anchors {
+                                left: parent.left; leftMargin: 24
+                                verticalCenter: parent.verticalCenter
+                            }
                             text: modelData.title
                             font.pixelSize: 16
                             font.bold: true
                         }
                     }
 
-                    // Horizontal scroll row of app cards
-                    ScrollView {
-                        width: parent.width
-                        height: 130
-                        contentWidth: appRow.implicitWidth
-                        contentHeight: height
-                        ScrollBar.vertical.policy: ScrollBar.AlwaysOff
-                        ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-                        clip: true
+                    // App grid — wraps to as many rows as needed
+                    Flow {
+                        id: appFlow
+                        width: parent.width - 48
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 12
 
-                        Row {
-                            id: appRow
-                            spacing: 12
-                            anchors.verticalCenter: parent.verticalCenter
+                        Repeater {
+                            model: appsForSection(modelData.key).slice(0, 20)
 
-                            Item { width: 24; height: 1 }
+                            Rectangle {
+                                width: 120
+                                height: 120
+                                radius: 10
+                                color: palette.button
+                                border.color: palette.mid
+                                border.width: 1
 
-                            Repeater {
-                                model: {
-                                    var arr = appsForSection(modelData.key);
-                                    return arr.slice(0, 12);
+                                Column {
+                                    anchors { fill: parent; margins: 8 }
+                                    spacing: 6
+
+                                    AppIcon {
+                                        iconPath: modelData.icon_path || ""
+                                        iconName: modelData.name || modelData.id || "?"
+                                        size: 56
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                    }
+
+                                    Label {
+                                        width: parent.width
+                                        text: modelData.name || modelData.id || ""
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
                                 }
 
-                                Rectangle {
-                                    width: 110
-                                    height: 110
-                                    radius: 10
-                                    color: palette.button
-                                    border.color: palette.mid
-                                    border.width: 1
-
-                                    Column {
-                                        anchors { fill: parent; margins: 8 }
-                                        spacing: 4
-
-                                        AppIcon {
-                                            iconPath: modelData.icon_path || ""
-                                            iconName: modelData.name || modelData.id || "?"
-                                            size: 48
-                                            anchors.horizontalCenter: parent.horizontalCenter
-                                        }
-
-                                        Label {
-                                            width: parent.width
-                                            text: modelData.name || modelData.id || ""
-                                            font.pixelSize: 11
-                                            elide: Text.ElideRight
-                                            horizontalAlignment: Text.AlignHCenter
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.showDetail(modelData)
-                                    }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.showDetail(modelData)
                                 }
                             }
-                            Item { width: 24; height: 1 }
                         }
                     }
 
-                    Item { width: parent.width; height: 16 }
+                    Item { width: parent.width; height: 20 }
                 }
             }
 
-            // Empty state (loaded but no data)
+            // Empty / error state
             Item {
                 width: parent.width
                 height: 200
-                visible: !loading && homeData !== null &&
-                         appsForSection("picks").length === 0 &&
-                         appsForSection("popular").length === 0
+                visible: !loading && homeData === null
 
                 Column {
                     anchors.centerIn: parent

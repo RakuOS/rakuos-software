@@ -2,7 +2,7 @@
 // Mirrors src/backend/flatpak.py
 
 use anyhow::Result;
-use rakuos_appstream::{AppInfo, load_appstream};
+use rakuos_appstream::{AppInfo, get_appstream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -64,7 +64,7 @@ impl From<&AppInfo> for FlatpakApp {
 
 /// Return list of installed Flatpaks enriched with AppStream metadata.
 pub fn get_installed() -> Result<Vec<FlatpakApp>> {
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
     let appstream_flatpak: HashMap<&str, &AppInfo> = appstream
         .values()
         .filter(|a| a.source == "flatpak")

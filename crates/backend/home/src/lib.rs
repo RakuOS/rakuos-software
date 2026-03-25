@@ -1,12 +1,16 @@
 // rakuos-home — Home page data (popular, picks, recently updated, new apps)
-// Mirrors src/backend/home.py
+// Mirrors src/backend/home.py and src/ui_qt/pages/home.py exactly.
+//
+// Key design: appstream is loaded ONCE by the caller and passed in, matching
+// Python's _appstream_cache pattern (load once, reuse across all sections).
 
 use anyhow::Result;
-use rakuos_appstream::{AppInfo, load_appstream};
+use rakuos_appstream::{AppInfo, get_appstream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -15,6 +19,7 @@ const PICKS_URL: &str = "https://rakuos.org/api/picks.json";
 const UPDATED_FEED: &str = "https://flathub.org/api/v2/feed/recently-updated";
 const NEW_FEED: &str = "https://flathub.org/api/v2/feed/new";
 
+// Mirrors Python's _POPULAR_SEED exactly
 const POPULAR_SEED: &[&str] = &[
     "com.valvesoftware.Steam",
     "org.mozilla.firefox",
@@ -38,6 +43,7 @@ const POPULAR_SEED: &[&str] = &[
     "org.kde.okular",
 ];
 
+// Mirrors Python's _FALLBACK_PICKS exactly
 const FALLBACK_PICKS: &[&str] = &[
     "com.valvesoftware.Steam",
     "com.obsproject.Studio",
@@ -80,66 +86,57 @@ impl From<&AppInfo> for HomeApp {
     }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Public API — takes pre-loaded appstream (call load_appstream() once) ──────
 
-/// Return popular apps sorted by live Flathub install stats (cached for 6h).
-/// Mirrors Python's get_popular() which fetches stats per app and sorts descending.
-pub async fn get_popular() -> Vec<HomeApp> {
-    let cache = cache_path("popular.json");
-    if cache_valid(&cache) {
-        if let Some(apps) = read_cache(&cache) {
-            return apps;
+/// Load all home page data. Appstream is loaded once here and shared across
+/// all sections — mirrors Python's _appstream_cache pattern exactly.
+/// If all section caches are fresh, returns immediately without loading appstream.
+pub async fn load_all() -> (Vec<HomeApp>, Vec<HomeApp>, Vec<HomeApp>, Vec<HomeApp>) {
+    // Fast path: all caches valid — skip expensive appstream parse entirely
+    let picks_c   = cache_path("picks.json");
+    let popular_c = cache_path("popular.json");
+    let updated_c = cache_path("recently_updated.json");
+    let new_c     = cache_path("new_apps.json");
+
+    if cache_valid(&picks_c) && cache_valid(&popular_c)
+        && cache_valid(&updated_c) && cache_valid(&new_c)
+    {
+        if let (Some(picks), Some(popular), Some(updated), Some(new)) = (
+            read_cache(&picks_c),
+            read_cache(&popular_c),
+            read_cache(&updated_c),
+            read_cache(&new_c),
+        ) {
+            return (picks, popular, updated, new);
         }
     }
 
-    let appstream = load_appstream().unwrap_or_default();
+    // Slow path: load appstream once, then fill missing sections in parallel
+    let appstream = get_appstream();
 
-    // Fetch live stats for each seed app and sort by install count descending
-    let client = reqwest::Client::new();
-    let mut scored: Vec<(u64, &str)> = Vec::new();
-    for id in POPULAR_SEED {
-        let count = fetch_app_stats(&client, id).await;
-        scored.push((count, id));
-    }
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    // popular is sync (no network), compute immediately
+    let popular = get_popular(&appstream);
 
-    let apps: Vec<HomeApp> = scored
-        .iter()
-        .filter_map(|(_, id)| appstream.get(*id).map(HomeApp::from))
-        .collect();
+    // picks / updated / new all do network calls — run them in parallel
+    let a1 = appstream.clone();
+    let a2 = appstream.clone();
+    let (picks, updated, new) = tokio::join!(
+        async move { get_picks(&*a1).await },
+        async move { get_recently_updated(&*a2).await },
+        async move { get_new_apps(&*appstream).await },
+    );
 
-    write_cache(&cache, &apps);
-    apps
+    (picks, popular, updated, new)
 }
 
-async fn fetch_app_stats(client: &reqwest::Client, app_id: &str) -> u64 {
-    let url = format!("https://flathub.org/api/v2/stats/{}", app_id);
-    let Ok(resp) = client
-        .get(&url)
-        .header("User-Agent", "RakuOS-Software/1.0")
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await
-    else {
-        return 0;
-    };
-    let Ok(json) = resp.json::<serde_json::Value>().await else { return 0 };
-    json["installs_total"]
-        .as_u64()
-        .or_else(|| json["downloads_total"].as_u64())
-        .unwrap_or(0)
-}
-
-/// Return editor's picks from rakuos.org API (with local fallback).
-pub async fn get_picks() -> Vec<HomeApp> {
+/// Editor's picks — tries rakuos.org with short timeout, falls back to FALLBACK_PICKS.
+pub async fn get_picks(appstream: &HashMap<String, AppInfo>) -> Vec<HomeApp> {
     let cache = cache_path("picks.json");
     if cache_valid(&cache) {
         if let Some(apps) = read_cache(&cache) {
             return apps;
         }
     }
-
-    let appstream = load_appstream().unwrap_or_default();
 
     let ids: Vec<String> = match fetch_json(PICKS_URL).await {
         Ok(v) => v
@@ -153,17 +150,28 @@ pub async fn get_picks() -> Vec<HomeApp> {
         Err(_) => FALLBACK_PICKS.iter().map(|s| s.to_string()).collect(),
     };
 
-    let apps: Vec<HomeApp> = ids
-        .iter()
-        .filter_map(|id| appstream.get(id.as_str()).map(HomeApp::from))
-        .collect();
-
+    let apps = resolve_ids(&ids, appstream, 12);
     write_cache(&cache, &apps);
     apps
 }
 
-/// Return recently updated apps from Flathub RSS feed.
-pub async fn get_recently_updated() -> Vec<HomeApp> {
+/// Popular apps from POPULAR_SEED resolved against local AppStream (no network).
+pub fn get_popular(appstream: &HashMap<String, AppInfo>) -> Vec<HomeApp> {
+    let cache = cache_path("popular.json");
+    if cache_valid(&cache) {
+        if let Some(apps) = read_cache(&cache) {
+            return apps;
+        }
+    }
+
+    let ids: Vec<String> = POPULAR_SEED.iter().map(|s| s.to_string()).collect();
+    let apps = resolve_ids(&ids, appstream, 20);
+    write_cache(&cache, &apps);
+    apps
+}
+
+/// Recently updated from Flathub RSS. Returns empty on network failure.
+pub async fn get_recently_updated(appstream: &HashMap<String, AppInfo>) -> Vec<HomeApp> {
     let cache = cache_path("recently_updated.json");
     if cache_valid(&cache) {
         if let Some(apps) = read_cache(&cache) {
@@ -171,14 +179,13 @@ pub async fn get_recently_updated() -> Vec<HomeApp> {
         }
     }
 
-    let appstream = load_appstream().unwrap_or_default();
-    let apps = fetch_feed_apps(UPDATED_FEED, &appstream).await;
+    let apps = fetch_feed_apps(UPDATED_FEED, appstream).await;
     write_cache(&cache, &apps);
     apps
 }
 
-/// Return new apps from Flathub RSS feed.
-pub async fn get_new_apps() -> Vec<HomeApp> {
+/// New apps from Flathub RSS. Returns empty on network failure.
+pub async fn get_new_apps(appstream: &HashMap<String, AppInfo>) -> Vec<HomeApp> {
     let cache = cache_path("new_apps.json");
     if cache_valid(&cache) {
         if let Some(apps) = read_cache(&cache) {
@@ -186,10 +193,51 @@ pub async fn get_new_apps() -> Vec<HomeApp> {
         }
     }
 
-    let appstream = load_appstream().unwrap_or_default();
-    let apps = fetch_feed_apps(NEW_FEED, &appstream).await;
+    let apps = fetch_feed_apps(NEW_FEED, appstream).await;
     write_cache(&cache, &apps);
     apps
+}
+
+// ── ID resolution (mirrors Python's _resolve_apps) ───────────────────────────
+
+fn resolve_ids(ids: &[String], appstream: &HashMap<String, AppInfo>, limit: usize) -> Vec<HomeApp> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for id in ids {
+        if result.len() >= limit {
+            break;
+        }
+        if let Some(app) = resolve_one(id, appstream) {
+            if !seen.contains(&app.id) {
+                seen.insert(app.id.clone());
+                result.push(HomeApp::from(app));
+            }
+        }
+    }
+    result
+}
+
+/// Case-insensitive ID lookup with .desktop fallback — mirrors Python's _resolve_apps.
+fn resolve_one<'a>(id: &str, appstream: &'a HashMap<String, AppInfo>) -> Option<&'a AppInfo> {
+    let clean = id.trim_end_matches(".desktop");
+    let clean_lc = clean.to_lowercase();
+
+    for candidate in &[
+        clean_lc.clone(),
+        format!("{}.desktop", clean_lc),
+        id.to_string(),
+        format!("{}.desktop", id),
+    ] {
+        if let Some(a) = appstream.get(candidate.as_str()) {
+            return Some(a);
+        }
+    }
+
+    // Last-resort linear scan (case-insensitive id match)
+    appstream.values().find(|a| {
+        a.id.trim_end_matches(".desktop").to_lowercase() == clean_lc
+    })
 }
 
 // ── Internals ─────────────────────────────────────────────────────────────────
@@ -233,7 +281,7 @@ async fn fetch_json(url: &str) -> Result<serde_json::Value> {
     let resp = reqwest::Client::new()
         .get(url)
         .header("User-Agent", "RakuOS-Software/1.0")
-        .timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(3))
         .send()
         .await?
         .json()
@@ -241,10 +289,7 @@ async fn fetch_json(url: &str) -> Result<serde_json::Value> {
     Ok(resp)
 }
 
-async fn fetch_feed_apps(
-    url: &str,
-    appstream: &HashMap<String, AppInfo>,
-) -> Vec<HomeApp> {
+async fn fetch_feed_apps(url: &str, appstream: &HashMap<String, AppInfo>) -> Vec<HomeApp> {
     let Ok(resp) = reqwest::Client::new()
         .get(url)
         .header("User-Agent", "RakuOS-Software/1.0")
@@ -259,38 +304,32 @@ async fn fetch_feed_apps(
         return Vec::new();
     };
 
-    // Parse RSS/Atom — extract app IDs from <link> fields
-    // URL format: https://flathub.org/apps/org.kde.okular
-    let ids: Vec<String> = text
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.contains("/apps/") {
-                let after = line.split("/apps/").last()?;
-                let id = after
-                    .trim_end_matches("</link>")
-                    .trim_end_matches('"')
-                    .trim_end_matches('\'')
-                    .trim_end_matches('>')
-                    .trim();
-                if id.contains('.') {
-                    return Some(id.to_string());
-                }
+    // Feed is served as one long line — iterate every /apps/ occurrence
+    // (mirroring Python's _parse_feed which uses ElementTree)
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for chunk in text.split("/apps/").skip(1) {
+        // App ID ends at the first char that isn't alphanumeric / . - _
+        let end = chunk
+            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_')
+            .unwrap_or(chunk.len());
+        let id = chunk[..end].trim();
+        if id.contains('.') && !id.is_empty() && seen.insert(id.to_string()) {
+            ids.push(id.to_string());
+            if ids.len() >= 20 {
+                break;
             }
-            None
-        })
-        .take(20)
-        .collect();
+        }
+    }
 
-    ids.iter()
-        .filter_map(|id| appstream.get(id.as_str()).map(HomeApp::from))
-        .collect()
+    resolve_ids(&ids, appstream, 20)
 }
 
-/// Refresh all caches — mirrors Python's refresh_all(), called by tray daemon.
+/// Refresh all caches — called by tray daemon on schedule.
 pub async fn refresh_all() {
-    get_picks().await;
-    get_recently_updated().await;
-    get_new_apps().await;
-    get_popular().await; // last — slowest (fetches stats per app)
+    let appstream = get_appstream();
+    get_picks(&appstream).await;
+    get_recently_updated(&appstream).await;
+    get_new_apps(&appstream).await;
+    get_popular(&appstream);
 }

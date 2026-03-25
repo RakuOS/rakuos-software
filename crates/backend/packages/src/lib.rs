@@ -2,13 +2,25 @@
 // Mirrors src/backend/packages.py
 
 use anyhow::Result;
-use rakuos_appstream::{AppInfo, load_appstream};
+use rakuos_appstream::{AppInfo, get_appstream};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
 // ── Data types ────────────────────────────────────────────────────────────────
+
+/// One installable source for an app (native RPM or a Flatpak remote).
+/// Only populated in `get_app_by_id` for the detail page.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SourceOption {
+    pub id: String,           // package_name for native, app_id for flatpak
+    pub source: String,       // "native", "flatpak", "terra"
+    pub package_name: String,
+    pub installed: bool,
+    pub label: String,        // "RakuOS Linux" or "Flathub" / remote title
+    pub remote: String,       // flatpak remote name
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeApp {
@@ -31,6 +43,8 @@ pub struct NativeApp {
     pub installed: bool,
     pub is_addon: bool,
     pub pkg_name_guessed: bool,
+    #[serde(default)]
+    pub sources: Vec<SourceOption>, // populated in get_app_by_id for detail page
 }
 
 impl From<&AppInfo> for NativeApp {
@@ -55,6 +69,7 @@ impl From<&AppInfo> for NativeApp {
             installed: false,
             is_addon: a.is_addon,
             pkg_name_guessed: a.pkg_name_guessed,
+            sources: Vec::new(),
         }
     }
 }
@@ -86,7 +101,7 @@ fn is_browseable(a: &NativeApp) -> bool {
 
 /// Return all available apps from AppStream (native + flatpak), with installed status.
 pub fn get_available() -> Result<Vec<NativeApp>> {
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
     let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks();
 
@@ -116,7 +131,7 @@ pub fn get_installed() -> Result<Vec<NativeApp>> {
         return Ok(Vec::new());
     }
 
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
 
     // Build pkg_name → AppInfo lookup
     let mut pkg_map: std::collections::HashMap<String, &rakuos_appstream::AppInfo> =
@@ -179,7 +194,7 @@ pub fn get_installed() -> Result<Vec<NativeApp>> {
 
 /// Return installed Flatpak apps enriched with AppStream metadata.
 pub fn get_installed_flatpaks_enriched() -> Result<Vec<NativeApp>> {
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
     let installed_fp = get_installed_flatpaks_with_info();
 
     let mut results: Vec<NativeApp> = Vec::new();
@@ -212,7 +227,7 @@ pub fn get_installed_flatpaks_enriched() -> Result<Vec<NativeApp>> {
 /// Search all apps (native + flatpak) by name, summary, id, or keywords.
 /// Results ranked: name-starts-with > name-contains > id/pkg-contains > summary > keyword.
 pub fn search(query: &str) -> Result<Vec<NativeApp>> {
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
     let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks();
     let q = query.to_lowercase();
@@ -259,7 +274,7 @@ pub fn search(query: &str) -> Result<Vec<NativeApp>> {
 /// Return all apps in a given AppStream category (case-insensitive).
 /// Includes both native and flatpak. Deduplicates by (name_lower, source).
 pub fn get_by_category(category: &str) -> Result<Vec<NativeApp>> {
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
     let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks();
     let cat = category.to_lowercase();
@@ -296,22 +311,111 @@ pub fn get_by_category(category: &str) -> Result<Vec<NativeApp>> {
     Ok(results)
 }
 
-/// Look up a single app by its AppStream ID.
+/// Look up a single app by its AppStream ID, including available install sources.
+/// The returned NativeApp has its `sources` field populated for use by the detail page.
 pub fn get_app_by_id(app_id: &str) -> Result<Option<NativeApp>> {
-    let appstream = load_appstream()?;
+    let appstream = get_appstream();
     let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks();
 
-    if let Some(a) = appstream.get(app_id) {
-        let mut app = NativeApp::from(a);
-        if a.source == "flatpak" {
-            app.installed = installed_fp.contains(&a.id);
-        } else {
-            app.installed = installed_rpm.contains(&a.package_name);
-        }
-        return Ok(Some(app));
+    let Some(a) = appstream.get(app_id) else {
+        return Ok(None);
+    };
+
+    let mut app = NativeApp::from(a);
+    if a.source == "flatpak" {
+        app.installed = installed_fp.contains(&a.id);
+    } else {
+        app.installed = installed_rpm.contains(&a.package_name);
     }
-    Ok(None)
+
+    // Build sources list for the detail page install-source dropdown
+    app.sources = build_sources(&app, app_id, &appstream, &installed_rpm, &installed_fp);
+
+    Ok(Some(app))
+}
+
+/// Build the list of available install sources for a given app.
+/// Primary source is always first; alternate (native↔flatpak) is appended if found.
+fn build_sources(
+    primary: &NativeApp,
+    app_id: &str,
+    appstream: &HashMap<String, AppInfo>,
+    installed_rpm: &HashSet<String>,
+    installed_fp: &HashSet<String>,
+) -> Vec<SourceOption> {
+    let mut sources = Vec::new();
+
+    sources.push(SourceOption {
+        id: primary.id.clone(),
+        source: primary.source.clone(),
+        package_name: primary.package_name.clone(),
+        installed: primary.installed,
+        label: source_label(&primary.source, ""),
+        remote: String::new(),
+    });
+
+    if primary.source == "flatpak" {
+        // Look for native alternate: injected stubs are stored as "native:<rpm_name>"
+        let pkg = &primary.package_name;
+        let native_key = format!("native:{}", pkg);
+        let alt = appstream.get(&native_key).or_else(|| {
+            appstream.values().find(|a| {
+                a.source != "flatpak" && a.package_name == *pkg
+            })
+        });
+        if let Some(nat) = alt {
+            sources.push(SourceOption {
+                id: nat.package_name.clone(),
+                source: nat.source.clone(),
+                package_name: nat.package_name.clone(),
+                installed: installed_rpm.contains(&nat.package_name),
+                label: "RakuOS Linux".to_string(),
+                remote: String::new(),
+            });
+        }
+    } else {
+        // Native/terra — look for flatpak alternate stored as "flatpak:<app_id>"
+        let fp_key = format!("flatpak:{}", app_id);
+        if let Some(fp) = appstream.get(&fp_key) {
+            sources.push(SourceOption {
+                id: fp.id.clone(),
+                source: "flatpak".to_string(),
+                package_name: fp.package_name.clone(),
+                installed: installed_fp.contains(&fp.id),
+                label: "Flathub".to_string(),
+                remote: "flathub".to_string(),
+            });
+        }
+    }
+
+    sources
+}
+
+/// Human-readable label for an install source.
+fn source_label(source: &str, remote: &str) -> String {
+    match source {
+        "native" | "terra" => "RakuOS Linux".to_string(),
+        "flatpak" => {
+            if remote.is_empty() {
+                "Flathub".to_string()
+            } else {
+                // "fedora-flatpaks" → "Fedora-Flatpaks"
+                remote
+                    .split('-')
+                    .map(|part| {
+                        let mut c = part.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("-")
+            }
+        }
+        _ => source.to_string(),
+    }
 }
 
 /// Install a native package via `pkexec rakuos install <pkg>`.
@@ -473,6 +577,7 @@ impl Default for NativeApp {
             installed: false,
             is_addon: false,
             pkg_name_guessed: false,
+            sources: Vec::new(),
         }
     }
 }

@@ -10,6 +10,16 @@ Item {
     property bool loading: false
     property string lastQuery: ""
 
+    // Called from main.qml topbar search — triggers search immediately
+    function triggerSearch(q) {
+        searchField.text = q;
+        lastQuery = q;
+        searchResults = [];
+        loading = true;
+        backend.search(q);
+        pollTimer.start();
+    }
+
     Timer {
         id: debounce
         interval: 350
@@ -188,9 +198,10 @@ Item {
                                             radius: 3
                                             color: {
                                                 var src = modelData.source || "";
-                                                if (src === "flatpak") return "#e8e0f0";
-                                                if (src === "webapp")  return "#e3f2fd";
-                                                return palette.button;
+                                                if (src === "flatpak") return "#1565c0";
+                                                if (src === "terra")   return "#2e7d32";
+                                                if (src === "webapp")  return "#00695c";
+                                                return "#37474f";
                                             }
                                             anchors.verticalCenter: parent.verticalCenter
 
@@ -199,7 +210,7 @@ Item {
                                                 anchors.centerIn: parent
                                                 text: modelData.source || ""
                                                 font.pixelSize: 9
-                                                color: "#555"
+                                                color: "white"
                                             }
                                         }
                                     }

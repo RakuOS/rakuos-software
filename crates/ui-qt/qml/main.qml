@@ -160,7 +160,7 @@ ApplicationWindow {
                         anchors { fill: parent; leftMargin: 14; rightMargin: 8 }
                         spacing: 8
 
-                        Text {
+                        Label {
                             text: "🐉"
                             font.pixelSize: 22
                         }
@@ -445,6 +445,7 @@ ApplicationWindow {
             function onCurrentPageChanged() {
                 switch (backend.currentPage) {
                     case 3: installedPage.activate(); break;
+                    case 4: updatesPage.activate(); break;
                     case 5: systemPageItem.activate(); break;
                     case 7: detailPageItem.loadApp(root.detailApp); break;
                     case 8: installedPage.activate(); backend.navigate(3); break;

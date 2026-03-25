@@ -65,9 +65,9 @@ Item {
             id: settingsTab
             Layout.fillWidth: true
 
-            TabButton { text: "Updates" }
-            TabButton { text: "Flatpak Repositories" }
-            TabButton { text: "Firmware / LVFS" }
+            TabButton { text: "🔄  Updates" }
+            TabButton { text: "📦  Flatpak Repositories"; onClicked: flatpakTab.loadRemotes() }
+            TabButton { text: "🔧  Firmware / LVFS";      onClicked: firmwareTab.loadData() }
         }
 
         Rectangle { Layout.fillWidth: true; height: 1; color: palette.mid; opacity: 0.3 }
@@ -123,9 +123,7 @@ Item {
                     }
 
                     Item { height: 16; width: 1 }
-
                     Rectangle { width: parent.width; height: 1; color: palette.mid; opacity: 0.3 }
-
                     Item { height: 16; width: 1 }
 
                     Label {
@@ -135,34 +133,13 @@ Item {
                         bottomPadding: 8
                     }
 
-                    CheckBox {
-                        id: checkPkgs
-                        text: "Overlay package updates"
-                        checked: true
-                    }
-
-                    CheckBox {
-                        id: checkFlatpak
-                        text: "Flatpak updates"
-                        checked: true
-                    }
-
-                    CheckBox {
-                        id: checkImage
-                        text: "System image updates (bootc)"
-                        checked: true
-                    }
-
-                    CheckBox {
-                        id: checkAI
-                        text: "AppImage updates"
-                        checked: true
-                    }
+                    CheckBox { id: checkPkgs;    text: "Overlay package updates";       checked: true }
+                    CheckBox { id: checkFlatpak; text: "Flatpak updates";               checked: true }
+                    CheckBox { id: checkImage;   text: "System image updates (bootc)";  checked: true }
+                    CheckBox { id: checkAI;      text: "AppImage updates";              checked: true }
 
                     Item { height: 16; width: 1 }
-
                     Rectangle { width: parent.width; height: 1; color: palette.mid; opacity: 0.3 }
-
                     Item { height: 16; width: 1 }
 
                     Label {
@@ -212,112 +189,583 @@ Item {
             }
 
             // ── Flatpak repos tab ────────────────────────────────────────────
-            ScrollView {
-                contentWidth: availableWidth
-                clip: true
+            Item {
+                id: flatpakTab
 
-                Column {
-                    width: parent.width
-                    topPadding: 20
-                    leftPadding: 24
-                    rightPadding: 24
-                    bottomPadding: 20
-                    spacing: 12
+                property var remotes: []
+                property bool hasFlathub: false
+                property string statusMsg: ""
+                property bool statusOk: true
 
-                    Label {
-                        text: "Flatpak Repositories"
-                        font.pixelSize: 16
-                        font.bold: true
+                function loadRemotes() {
+                    try {
+                        var json = backend.getFlatpakRemotes();
+                        var data = JSON.parse(json);
+                        remotes = data.remotes || [];
+                        hasFlathub = data.has_flathub === true;
+                    } catch(e) {
+                        remotes = [];
+                        hasFlathub = false;
                     }
+                }
 
-                    Label {
-                        text: "Manage Flatpak repositories. Use the command line to add or remove remotes:\nflatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
-                        color: palette.mid
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
-                        width: parent.width
-                    }
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 0
 
+                    // Header row
                     Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: palette.mid
-                        opacity: 0.3
-                    }
+                        Layout.fillWidth: true
+                        height: hdrRow.implicitHeight + 24
+                        color: palette.button
 
-                    Button {
-                        text: "Add Flathub (System)"
-                        onClicked: {
-                            // Would run flatpak remote-add
+                        RowLayout {
+                            id: hdrRow
+                            anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
+                            spacing: 10
+
+                            Column {
+                                Layout.fillWidth: true
+                                Label {
+                                    text: "Flatpak Repositories"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+                                Label {
+                                    text: "Manage Flatpak repositories. System remotes are available to all users."
+                                    font.pixelSize: 11
+                                    color: palette.mid
+                                    wrapMode: Text.WordWrap
+                                    width: parent.width
+                                }
+                            }
+
+                            Button {
+                                text: "➕  Add Flathub"
+                                visible: !flatpakTab.hasFlathub
+                                onClicked: {
+                                    var res = JSON.parse(backend.addFlathub(true));
+                                    flatpakTab.statusMsg = res.msg || "";
+                                    flatpakTab.statusOk  = res.ok === true;
+                                    flatpakTab.loadRemotes();
+                                }
+                            }
+
+                            Button {
+                                text: "➕  Add Remote"
+                                onClicked: addRemoteDlg.open()
+                            }
                         }
                     }
 
+                    Rectangle { Layout.fillWidth: true; height: 1; color: palette.mid; opacity: 0.3 }
+
                     Label {
-                        text: "Full Flatpak repository management will be available in a future update."
-                        color: palette.mid
-                        font.pixelSize: 11
-                        wrapMode: Text.WordWrap
-                        width: parent.width
+                        leftPadding: 16
+                        topPadding: 8
+                        bottomPadding: 4
+                        text: flatpakTab.statusMsg
+                        color: flatpakTab.statusOk ? "#4caf50" : "#e53935"
+                        font.pixelSize: 12
+                        visible: flatpakTab.statusMsg !== ""
+                        Layout.fillWidth: true
+                    }
+
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        contentWidth: availableWidth
+                        clip: true
+
+                        Column {
+                            width: parent.width
+                            topPadding: 8
+                            bottomPadding: 8
+                            spacing: 8
+
+                            // Empty state
+                            Label {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                topPadding: 40
+                                text: "No Flatpak remotes configured."
+                                color: palette.mid
+                                visible: flatpakTab.remotes.length === 0
+                            }
+
+                            Repeater {
+                                model: flatpakTab.remotes
+
+                                Rectangle {
+                                    id: remoteRow
+                                    width: parent.width - 32
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    height: remoteRowLayout.implicitHeight + 20
+                                    radius: 6
+                                    color: palette.button
+                                    border.color: palette.mid
+                                    border.width: 1
+
+                                    property string rowStatusMsg: ""
+                                    property bool rowStatusOk: true
+
+                                    RowLayout {
+                                        id: remoteRowLayout
+                                        anchors { fill: parent; leftMargin: 14; rightMargin: 14 }
+                                        spacing: 10
+
+                                        CheckBox {
+                                            checked: modelData.enabled
+                                            onToggled: {
+                                                var res = JSON.parse(backend.setFlatpakRemoteEnabled(
+                                                    modelData.name, checked, modelData.system));
+                                                remoteRow.rowStatusMsg = res.msg || "";
+                                                remoteRow.rowStatusOk = res.ok === true;
+                                                if (!res.ok) { checked = !checked; }
+                                            }
+                                        }
+
+                                        Column {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+
+                                            RowLayout {
+                                                spacing: 8
+                                                Label {
+                                                    text: modelData.title || modelData.name
+                                                    font.bold: true
+                                                    font.pixelSize: 13
+                                                }
+                                                Rectangle {
+                                                    radius: 3
+                                                    color: modelData.system ? "#1a237e" : "#37474f"
+                                                    width: scopeLbl.implicitWidth + 8
+                                                    height: 16
+                                                    Label {
+                                                        id: scopeLbl
+                                                        anchors.centerIn: parent
+                                                        text: modelData.system ? "system" : "user"
+                                                        font.pixelSize: 9
+                                                        color: "white"
+                                                    }
+                                                }
+                                            }
+
+                                            Label {
+                                                text: modelData.url || ""
+                                                font.pixelSize: 11
+                                                color: palette.mid
+                                                visible: text !== ""
+                                                elide: Text.ElideRight
+                                                width: parent.width
+                                            }
+
+                                            Label {
+                                                text: remoteRow.rowStatusMsg
+                                                font.pixelSize: 11
+                                                color: remoteRow.rowStatusOk ? "#4caf50" : "#e53935"
+                                                visible: text !== ""
+                                            }
+                                        }
+
+                                        Button {
+                                            text: "Remove"
+                                            flat: true
+                                            contentItem: Label {
+                                                text: "Remove"
+                                                color: "#e53935"
+                                                font.pixelSize: 12
+                                            }
+                                            onClicked: {
+                                                var res = JSON.parse(backend.removeFlatpakRemote(
+                                                    modelData.name, modelData.system));
+                                                flatpakTab.statusMsg = res.msg || "";
+                                                flatpakTab.statusOk  = res.ok === true;
+                                                flatpakTab.loadRemotes();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
+
+                // ── Add remote dialog ─────────────────────────────────────────
+                Dialog {
+                    id: addRemoteDlg
+                    title: "Add Flatpak Remote"
+                    modal: true
+                    width: 420
+                    standardButtons: Dialog.Ok | Dialog.Cancel
+
+                    onAccepted: {
+                        var name = addNameField.text.trim();
+                        var url  = addUrlField.text.trim();
+                        if (!name || !url) {
+                            addDlgStatus.text = "Name and URL are required.";
+                            addDlgStatus.color = "#e53935";
+                            return;
+                        }
+                        var res = JSON.parse(backend.addFlatpakRemote(name, url, addSystemChk.checked));
+                        if (res.ok) {
+                            flatpakTab.loadRemotes();
+                            addNameField.text = "";
+                            addUrlField.text  = "";
+                        } else {
+                            addDlgStatus.text  = res.msg || "Failed.";
+                            addDlgStatus.color = "#e53935";
+                        }
+                    }
+
+                    Column {
+                        width: parent.width
+                        spacing: 10
+
+                        Label { text: "Name (e.g. flathub):" }
+                        TextField {
+                            id: addNameField
+                            width: parent.width
+                            placeholderText: "remote-name"
+                        }
+
+                        Label { text: "URL (.flatpakrepo or repository URL):" }
+                        TextField {
+                            id: addUrlField
+                            width: parent.width
+                            placeholderText: "https://…"
+                        }
+
+                        CheckBox {
+                            id: addSystemChk
+                            text: "Install as system-wide remote (recommended)"
+                            checked: true
+                        }
+
+                        Label {
+                            id: addDlgStatus
+                            text: ""
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            visible: text !== ""
+                        }
+                    }
+                }
+
+                Component.onCompleted: loadRemotes()
             }
 
             // ── Firmware tab ─────────────────────────────────────────────────
-            ScrollView {
-                contentWidth: availableWidth
-                clip: true
+            Item {
+                id: firmwareTab
 
-                Column {
-                    width: parent.width
-                    topPadding: 20
-                    leftPadding: 24
-                    rightPadding: 24
-                    bottomPadding: 20
-                    spacing: 12
+                property var firmwareData: null
+                property bool refreshing: false
+                property string refreshLog: ""
+                property string statusMsg: ""
+                property bool statusOk: true
 
-                    Label {
-                        text: "Firmware & LVFS"
-                        font.pixelSize: 16
-                        font.bold: true
-                    }
-
-                    Label {
-                        text: "Manage firmware update sources via fwupd. LVFS provides updates from hardware vendors."
-                        color: palette.mid
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
-                        width: parent.width
-                    }
-
-                    Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: palette.mid
-                        opacity: 0.3
-                    }
-
-                    Button {
-                        text: "Refresh Firmware Metadata"
-                        onClicked: {
-                            // Would run fwupdmgr refresh
-                        }
-                    }
-
-                    Button {
-                        text: "Check for Firmware Updates"
-                        onClicked: {
-                            // Would run fwupdmgr get-updates
-                        }
-                    }
-
-                    Label {
-                        text: "Full firmware management will be available in a future update."
-                        color: palette.mid
-                        font.pixelSize: 11
-                        wrapMode: Text.WordWrap
-                        width: parent.width
+                function loadData() {
+                    try {
+                        var json = backend.getFirmwareData();
+                        firmwareData = JSON.parse(json);
+                    } catch(e) {
+                        firmwareData = { available: false, remotes: [], vendor_dirs: [], updates: [] };
                     }
                 }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 0
+
+                    // Header
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: fwHdrRow.implicitHeight + 24
+                        color: palette.button
+
+                        RowLayout {
+                            id: fwHdrRow
+                            anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
+                            spacing: 10
+
+                            Column {
+                                Layout.fillWidth: true
+                                Label {
+                                    text: "Firmware & LVFS"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+                                Label {
+                                    text: "Manage firmware update sources via fwupd. LVFS provides updates from hardware vendors."
+                                    font.pixelSize: 11
+                                    color: palette.mid
+                                    wrapMode: Text.WordWrap
+                                    width: parent.width
+                                }
+                            }
+
+                            BusyIndicator {
+                                running: firmwareTab.refreshing
+                                visible: firmwareTab.refreshing
+                                implicitWidth: 22; implicitHeight: 22
+                            }
+
+                            Button {
+                                text: "🔄  Refresh Metadata"
+                                enabled: !firmwareTab.refreshing && (firmwareTab.firmwareData && firmwareTab.firmwareData.available)
+                                onClicked: {
+                                    firmwareTab.refreshing = true;
+                                    firmwareTab.refreshLog = "";
+                                    firmwareTab.statusMsg = "";
+                                    backend.refreshFirmware();
+                                    fwPollTimer.start();
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: palette.mid; opacity: 0.3 }
+
+                    // Not available notice
+                    Label {
+                        leftPadding: 16
+                        topPadding: 12
+                        text: "⚠  fwupd is not installed. Install it to manage firmware updates."
+                        color: "#ff9800"
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        visible: firmwareTab.firmwareData && !firmwareTab.firmwareData.available
+                    }
+
+                    Label {
+                        leftPadding: 16
+                        topPadding: 4
+                        text: firmwareTab.statusMsg
+                        color: firmwareTab.statusOk ? "#4caf50" : "#e53935"
+                        font.pixelSize: 12
+                        visible: firmwareTab.statusMsg !== ""
+                        Layout.fillWidth: true
+                    }
+
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        contentWidth: availableWidth
+                        clip: true
+                        visible: firmwareTab.firmwareData && firmwareTab.firmwareData.available
+
+                        Column {
+                            width: parent.width
+                            topPadding: 8
+                            bottomPadding: 8
+                            spacing: 8
+
+                            Label {
+                                leftPadding: 16
+                                text: "Remotes"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: palette.mid
+                                visible: firmwareTab.firmwareData && firmwareTab.firmwareData.remotes &&
+                                         firmwareTab.firmwareData.remotes.length > 0
+                            }
+
+                            // Empty state
+                            Label {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                topPadding: 40
+                                text: "No firmware remotes configured."
+                                color: palette.mid
+                                visible: !firmwareTab.firmwareData ||
+                                         !firmwareTab.firmwareData.remotes ||
+                                         firmwareTab.firmwareData.remotes.length === 0
+                            }
+
+                            Repeater {
+                                model: (firmwareTab.firmwareData && firmwareTab.firmwareData.remotes)
+                                       ? firmwareTab.firmwareData.remotes : []
+
+                                Rectangle {
+                                    id: fwRemoteRow
+                                    width: parent.width - 32
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    height: fwRemoteLayout.implicitHeight + 20
+                                    radius: 6
+                                    color: palette.button
+                                    border.color: palette.mid
+                                    border.width: 1
+
+                                    property string rowStatus: ""
+                                    property bool rowOk: true
+
+                                    RowLayout {
+                                        id: fwRemoteLayout
+                                        anchors { fill: parent; leftMargin: 14; rightMargin: 14 }
+                                        spacing: 10
+
+                                        CheckBox {
+                                            checked: modelData.enabled
+                                            onToggled: {
+                                                var res = JSON.parse(backend.setFirmwareRemoteEnabled(
+                                                    modelData.id, checked));
+                                                fwRemoteRow.rowStatus = res.msg || "";
+                                                fwRemoteRow.rowOk = res.ok === true;
+                                                if (!res.ok) { checked = !checked; }
+                                                else { firmwareTab.loadData(); }
+                                            }
+                                        }
+
+                                        Column {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+
+                                            RowLayout {
+                                                spacing: 8
+                                                Label {
+                                                    text: modelData.title || modelData.id
+                                                    font.bold: true
+                                                    font.pixelSize: 13
+                                                }
+                                                Label {
+                                                    text: modelData.kind || ""
+                                                    font.pixelSize: 10
+                                                    color: palette.mid
+                                                    visible: text !== ""
+                                                }
+                                            }
+
+                                            Label {
+                                                text: modelData.url || modelData.metadata_uri || ""
+                                                font.pixelSize: 11
+                                                color: palette.mid
+                                                visible: text !== ""
+                                                elide: Text.ElideRight
+                                                width: parent.width
+                                            }
+
+                                            Label {
+                                                text: modelData.last_updated ? "Updated: " + modelData.last_updated : ""
+                                                font.pixelSize: 10
+                                                color: palette.mid
+                                                visible: text !== ""
+                                            }
+
+                                            Label {
+                                                text: fwRemoteRow.rowStatus
+                                                font.pixelSize: 11
+                                                color: fwRemoteRow.rowOk ? "#4caf50" : "#e53935"
+                                                visible: text !== ""
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Vendor dirs section
+                            Label {
+                                leftPadding: 16
+                                topPadding: 8
+                                text: "Vendor Directories (" +
+                                      ((firmwareTab.firmwareData && firmwareTab.firmwareData.vendor_dirs)
+                                       ? firmwareTab.firmwareData.vendor_dirs.length : 0) + " found)"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: palette.mid
+                                visible: firmwareTab.firmwareData && firmwareTab.firmwareData.vendor_dirs &&
+                                         firmwareTab.firmwareData.vendor_dirs.length > 0
+                            }
+
+                            Repeater {
+                                model: (firmwareTab.firmwareData && firmwareTab.firmwareData.vendor_dirs)
+                                       ? firmwareTab.firmwareData.vendor_dirs : []
+
+                                Rectangle {
+                                    width: parent.width - 32
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    height: vdLayout.implicitHeight + 16
+                                    radius: 6
+                                    color: palette.button
+                                    border.color: palette.mid
+                                    border.width: 1
+                                    opacity: 0.8
+
+                                    RowLayout {
+                                        id: vdLayout
+                                        anchors { fill: parent; leftMargin: 14; rightMargin: 14 }
+                                        spacing: 10
+
+                                        Column {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            Label {
+                                                text: modelData.title || modelData.id
+                                                font.bold: true
+                                                font.pixelSize: 12
+                                            }
+                                            Label {
+                                                text: modelData.filename || ""
+                                                font.pixelSize: 10
+                                                color: palette.mid
+                                                visible: text !== ""
+                                                elide: Text.ElideRight
+                                                width: parent.width
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Refresh log
+                            Rectangle {
+                                width: parent.width - 32
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                height: 100
+                                color: Qt.rgba(0, 0, 0, 0.75)
+                                radius: 4
+                                clip: true
+                                visible: firmwareTab.refreshing || firmwareTab.refreshLog !== ""
+
+                                ScrollView {
+                                    anchors.fill: parent
+                                    contentWidth: availableWidth
+                                    Label {
+                                        width: parent.width
+                                        padding: 8
+                                        text: firmwareTab.refreshLog
+                                        color: "#d0d0d0"
+                                        font.family: "monospace"
+                                        font.pixelSize: 11
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Timer {
+                    id: fwPollTimer
+                    interval: 300
+                    repeat: true
+                    onTriggered: {
+                        backend.pollOp();
+                        firmwareTab.refreshLog = backend.readLog();
+                        if (!backend.opRunning) {
+                            stop();
+                            firmwareTab.refreshing = false;
+                            if (backend.opResult === 1) {
+                                firmwareTab.statusMsg = "✓ Firmware metadata refreshed.";
+                                firmwareTab.statusOk  = true;
+                                firmwareTab.loadData();
+                            } else {
+                                firmwareTab.statusMsg = "✗ Refresh failed.";
+                                firmwareTab.statusOk  = false;
+                            }
+                        }
+                    }
+                }
+
+                Component.onCompleted: loadData()
             }
         }
     }

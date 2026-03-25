@@ -9,36 +9,41 @@ Item {
     // ── State ──────────────────────────────────────────────────────────────────
     property string selectedCategory: ""
     property string selectedLabel: ""
-    property var    subcatList: []          // subs when top-level cat was clicked
+    property var    subcatList: []       // subs when top-level cat was clicked
     property string parentCat: ""
     property string parentLabel: ""
     property var    categoryApps: []
     property bool   loading: false
+    property bool   showAll: false       // true after "See all →" is clicked
 
-    // ── Public API (called from main.qml and sidebar) ─────────────────────────
+    // Top-level view: limit to 12 apps; leaf view: show all
+    readonly property int topLimit: 12
+    property var displayedApps: {
+        if (subcatList.length > 0 && !showAll)
+            return categoryApps.slice(0, topLimit);
+        return categoryApps;
+    }
 
-    // Called when sidebar top-level cat is clicked — shows subcat tiles + top apps
+    // ── Public API ─────────────────────────────────────────────────────────────
+
     function loadCategoryWithSubs(cat, label, subcats) {
         _reset(cat, label);
         subcatList = subcats || [];
         parentCat = "";
         parentLabel = "";
-        // Load apps for this top-level category (shown below subcat tiles)
+        showAll = false;
         _fetchApps(cat);
     }
 
-    // Called when subcat tile or subcat tree item clicked — shows app list
     function showCategory(cat, label) {
         _reset(cat, label);
         subcatList = [];
-        // Keep parent info for back button (set by caller if needed)
+        showAll = false;
         _fetchApps(cat);
     }
 
-    // Back button → restore parent category view
     function goBack() {
         if (parentCat !== "") {
-            // Find subcats for the parent from main's categoryTree
             var tree = root.categoryTree;
             var subs = [];
             for (var i = 0; i < tree.length; i++) {
@@ -48,7 +53,7 @@ Item {
         }
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
+    // ── Internal ───────────────────────────────────────────────────────────────
 
     function _reset(cat, label) {
         pollTimer.stop();
@@ -56,6 +61,7 @@ Item {
         selectedLabel = label;
         categoryApps = [];
         loading = false;
+        showAll = false;
     }
 
     function _fetchApps(cat) {
@@ -82,18 +88,18 @@ Item {
         }
     }
 
-    // ── UI ────────────────────────────────────────────────────────────────────
+    // ── UI ─────────────────────────────────────────────────────────────────────
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ── Back bar (shown when in a subcategory with a parent) ───────────────
+        // ── Back bar (shown when in a subcategory) ─────────────────────────────
         Rectangle {
             Layout.fillWidth: true
             height: 44
             color: palette.button
-            visible: parentCat !== ""
+            visible: parentCat !== "" && !showAll
 
             RowLayout {
                 anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
@@ -116,11 +122,39 @@ Item {
             }
         }
 
-        // ── Category heading ───────────────────────────────────────────────────
+        // ── "See all" back bar (shown when viewing all apps from top-level) ────
+        Rectangle {
+            Layout.fillWidth: true
+            height: 44
+            color: palette.button
+            visible: showAll
+
+            RowLayout {
+                anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
+                spacing: 8
+
+                Button {
+                    text: "← " + selectedLabel
+                    flat: true
+                    font.pixelSize: 12
+                    onClicked: { showAll = false; }
+                }
+
+                Label {
+                    text: "All " + selectedLabel + " Apps"
+                    font.pixelSize: 15
+                    font.bold: true
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+        }
+
+        // ── Category heading (top-level, no back bar) ──────────────────────────
         Item {
             Layout.fillWidth: true
-            height: selectedLabel !== "" ? 44 : 0
-            visible: selectedLabel !== ""
+            height: 44
+            visible: selectedLabel !== "" && parentCat === "" && !showAll
 
             Label {
                 anchors { left: parent.left; leftMargin: 24; verticalCenter: parent.verticalCenter }
@@ -140,18 +174,21 @@ Item {
             Column {
                 width: parent.width
                 topPadding: 8
-                bottomPadding: 16
+                bottomPadding: 24
                 spacing: 0
 
-                // ── Subcategory tiles (2-column grid, Discover style) ──────────
+                // ── Subcategory 2-column tile grid ─────────────────────────────
                 Item {
                     width: parent.width
                     height: subcatGrid.implicitHeight + 24
-                    visible: explorePage.subcatList.length > 0
+                    visible: explorePage.subcatList.length > 0 && !showAll
 
                     Grid {
                         id: subcatGrid
-                        anchors { left: parent.left; right: parent.right; top: parent.top; margins: 16 }
+                        anchors {
+                            left: parent.left; right: parent.right
+                            top: parent.top; margins: 16
+                        }
                         columns: 2
                         columnSpacing: 10
                         rowSpacing: 10
@@ -176,13 +213,15 @@ Item {
                                         font.pixelSize: 13
                                         font.bold: true
                                         Layout.fillWidth: true
-                                        color: tileArea.containsMouse ? palette.highlightedText : palette.text
+                                        color: tileArea.containsMouse
+                                               ? palette.highlightedText : palette.text
                                     }
 
                                     Label {
                                         text: "›"
                                         font.pixelSize: 20
-                                        color: tileArea.containsMouse ? palette.highlightedText : palette.mid
+                                        color: tileArea.containsMouse
+                                               ? palette.highlightedText : palette.mid
                                     }
                                 }
 
@@ -192,7 +231,7 @@ Item {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        explorePage.parentCat = explorePage.selectedCategory;
+                                        explorePage.parentCat   = explorePage.selectedCategory;
                                         explorePage.parentLabel = explorePage.selectedLabel;
                                         explorePage.showCategory(modelData.cat, modelData.label);
                                     }
@@ -202,11 +241,12 @@ Item {
                     }
                 }
 
-                // ── Top apps section header (shown below subcat tiles) ─────────
+                // ── Top Apps header + "See all" button ─────────────────────────
                 Item {
                     width: parent.width
-                    height: 40
-                    visible: explorePage.subcatList.length > 0 && !loading && categoryApps.length > 0
+                    height: 44
+                    visible: subcatList.length > 0 && !showAll
+                             && !loading && categoryApps.length > 0
 
                     RowLayout {
                         anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
@@ -217,10 +257,18 @@ Item {
                             font.bold: true
                             Layout.fillWidth: true
                         }
+
+                        Button {
+                            visible: categoryApps.length > topLimit
+                            text: "See all " + categoryApps.length + " →"
+                            flat: true
+                            font.pixelSize: 12
+                            onClicked: { showAll = true; }
+                        }
                     }
                 }
 
-                // ── Loading indicator ─────────────────────────────────────────
+                // ── Loading indicator ──────────────────────────────────────────
                 Item {
                     width: parent.width
                     height: 60
@@ -230,11 +278,14 @@ Item {
                         anchors.centerIn: parent
                         spacing: 12
                         BusyIndicator { running: loading; implicitWidth: 28; implicitHeight: 28 }
-                        Label { text: "Loading apps…"; anchors.verticalCenter: parent.verticalCenter }
+                        Label {
+                            text: "Loading apps…"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
                     }
                 }
 
-                // ── No apps state ─────────────────────────────────────────────
+                // ── Empty state ────────────────────────────────────────────────
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
                     topPadding: 40
@@ -244,7 +295,6 @@ Item {
                     visible: !loading && categoryApps.length === 0 && selectedCategory !== ""
                 }
 
-                // ── Empty state (no category selected) ───────────────────────
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
                     topPadding: 60
@@ -254,96 +304,67 @@ Item {
                     visible: !loading && selectedCategory === ""
                 }
 
-                // ── App list ──────────────────────────────────────────────────
-                Repeater {
-                    model: loading ? [] : categoryApps
+                // ── App grid (Flow — wraps to fill width) ──────────────────────
+                Flow {
+                    width: parent.width - 32
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 12
+                    visible: !loading && displayedApps.length > 0
+                    topPadding: 4
 
-                    Rectangle {
-                        width: explorePage.width
-                        height: 56
-                        color: rowArea.containsMouse ? palette.highlight : "transparent"
-
-                        RowLayout {
-                            anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
-                            spacing: 12
-
-                            AppIcon {
-                                iconPath: modelData.icon_path || ""
-                                iconName: modelData.name || modelData.id || "?"
-                                size: 36
-                            }
-
-                            Column {
-                                Layout.fillWidth: true
-                                spacing: 2
-
-                                Label {
-                                    text: modelData.name || modelData.id || ""
-                                    font.bold: true
-                                    elide: Text.ElideRight
-                                    width: parent.width
-                                    color: rowArea.containsMouse ? palette.highlightedText : palette.text
-                                }
-
-                                Label {
-                                    text: modelData.summary || ""
-                                    font.pixelSize: 11
-                                    color: rowArea.containsMouse ? palette.highlightedText : palette.mid
-                                    elide: Text.ElideRight
-                                    width: parent.width
-                                    visible: text !== ""
-                                }
-                            }
-
-                            // Source badge
-                            Rectangle {
-                                height: 18
-                                width: srcLbl.implicitWidth + 10
-                                radius: 3
-                                color: {
-                                    var s = modelData.source || "";
-                                    if (s === "flatpak") return "#e8e0f0";
-                                    if (s === "webapp")  return "#e3f2fd";
-                                    return palette.button;
-                                }
-
-                                Label {
-                                    id: srcLbl
-                                    anchors.centerIn: parent
-                                    text: modelData.source || ""
-                                    font.pixelSize: 9
-                                    color: "#555"
-                                }
-                            }
-
-                            Label {
-                                text: "✓"
-                                color: "#4caf50"
-                                font.pixelSize: 14
-                                visible: modelData.installed === true
-                            }
-
-                            Button {
-                                text: "Install"
-                                visible: modelData.installed !== true
-                                flat: true
-                                onClicked: backend.installApp(modelData.id || "", modelData.source || "")
-                            }
-                        }
+                    Repeater {
+                        model: loading ? [] : explorePage.displayedApps
 
                         Rectangle {
-                            anchors { bottom: parent.bottom; left: parent.left; right: parent.right; leftMargin: 16; rightMargin: 16 }
-                            height: 1
-                            color: palette.mid
-                            opacity: 0.15
-                        }
+                            width: 120
+                            height: 120
+                            radius: 10
+                            color: appCardArea.containsMouse ? Qt.lighter(palette.button, 1.08) : palette.button
+                            border.color: palette.mid
+                            border.width: 1
 
-                        MouseArea {
-                            id: rowArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.showDetail(modelData)
+                            Column {
+                                anchors { fill: parent; margins: 8 }
+                                spacing: 6
+
+                                AppIcon {
+                                    iconPath: modelData.icon_path || ""
+                                    iconName: modelData.name || modelData.id || "?"
+                                    size: 56
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                }
+
+                                Label {
+                                    width: parent.width
+                                    text: modelData.name || modelData.id || ""
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                            }
+
+                            // Installed checkmark badge
+                            Rectangle {
+                                visible: modelData.installed === true
+                                width: 16; height: 16
+                                radius: 8
+                                color: "#4caf50"
+                                anchors { top: parent.top; right: parent.right; margins: 4 }
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: "✓"
+                                    font.pixelSize: 9
+                                    color: "white"
+                                }
+                            }
+
+                            MouseArea {
+                                id: appCardArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.showDetail(modelData)
+                            }
                         }
                     }
                 }

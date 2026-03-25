@@ -10,11 +10,14 @@ Item {
     property bool upgrading: false
     property bool rebootRequired: false
     property string upgradeLog: ""
+    property string opStatusMsg: ""
+    property bool opSuccess: false
 
-    // Available DE images (matching Python RAKUOS_IMAGES list)
+    // Available DE images (matching Python RAKUOS_IMAGES)
     property var deImages: [
-        { label: "KDE Plasma", image_name: "rakuos-kde"   },
-        { label: "GNOME",      image_name: "rakuos-gnome" },
+        { label: "KDE Plasma", image_name: "rakuos-kde"    },
+        { label: "GNOME",      image_name: "rakuos-gnome"  },
+        { label: "COSMIC",     image_name: "rakuos-cosmic" },
     ]
 
     function activate() {
@@ -24,6 +27,7 @@ Item {
     function loadStatus() {
         loading = true;
         statusData = null;
+        opStatusMsg = "";
         backend.loadSystemStatus();
         pollTimer.start();
     }
@@ -32,6 +36,7 @@ Item {
         upgrading = true;
         upgradeLog = "";
         rebootRequired = false;
+        opStatusMsg = "";
         backend.upgradeSystem();
         upgradePollTimer.start();
     }
@@ -67,6 +72,11 @@ Item {
                 upgrading = false;
                 if (backend.opResult === 1) {
                     rebootRequired = true;
+                    opStatusMsg = "Upgrade staged. Reboot to apply.";
+                    opSuccess = true;
+                } else if (backend.opResult === 2) {
+                    opStatusMsg = "Upgrade failed. Check log above.";
+                    opSuccess = false;
                 }
             }
         }
@@ -76,7 +86,7 @@ Item {
     function parseImageName(imageRef) {
         if (!imageRef) return { name: "", isNvidia: false };
         var parts = imageRef.split(":");
-        var path = (parts[0] || "").replace("ghcr.io/", "");
+        var path = (parts[0] || "").replace("ghcr.io/", "").replace("docker.io/", "");
         var name = path.split("/").pop();
         return { name: name, isNvidia: name.endsWith("-nvidia") };
     }
@@ -87,6 +97,14 @@ Item {
             if (deImages[i].image_name === base) return deImages[i].label;
         }
         return imageName;
+    }
+
+    function repoUrlFromImage(imageRef) {
+        if (!imageRef) return "";
+        var parts = imageRef.rsplit(":");
+        // imageRef like "ghcr.io/rakuos/rakuos-kde:latest"
+        var colonIdx = imageRef.lastIndexOf(":");
+        return colonIdx > 0 ? imageRef.substring(0, colonIdx) : imageRef;
     }
 
     ScrollView {
@@ -101,6 +119,14 @@ Item {
             leftPadding: 20
             rightPadding: 20
             bottomPadding: 20
+
+            // Page title
+            Label {
+                text: "System"
+                font.pixelSize: 22
+                font.bold: true
+                bottomPadding: 4
+            }
 
             // Loading
             Item {
@@ -118,7 +144,6 @@ Item {
 
             // ── Booted Image card ────────────────────────────────────────────
             Rectangle {
-                id: imageCard
                 width: parent.width - 40
                 height: imageCardLayout.implicitHeight + 32
                 radius: 8
@@ -142,6 +167,12 @@ Item {
                             Layout.fillWidth: true
                         }
 
+                        BusyIndicator {
+                            running: upgrading
+                            visible: upgrading
+                            implicitWidth: 22; implicitHeight: 22
+                        }
+
                         Button {
                             text: "Upgrade System"
                             visible: !upgrading && !rebootRequired
@@ -149,9 +180,20 @@ Item {
                         }
 
                         Button {
+                            text: "↻ Rollback"
+                            visible: !upgrading
+                            flat: true
+                            contentItem: Label { text: "↻ Rollback"; color: "#e53935"; font.pixelSize: 12 }
+                            onClicked: rollbackConfirmDlg.open()
+                        }
+
+                        Button {
                             text: "🔄 Reboot to Apply"
                             visible: rebootRequired
                             highlighted: true
+                            background: Rectangle { color: "#1976d2"; radius: 4 }
+                            contentItem: Label { text: "🔄 Reboot to Apply"; color: "white" }
+                            onClicked: backend.rebootSystem()
                         }
                     }
 
@@ -182,7 +224,6 @@ Item {
                                 font.pixelSize: 12
                                 Layout.preferredWidth: 80
                             }
-
                             Label {
                                 text: modelData.value
                                 font.pixelSize: 12
@@ -191,6 +232,16 @@ Item {
                                 elide: Text.ElideRight
                             }
                         }
+                    }
+
+                    // Status message
+                    Label {
+                        text: opStatusMsg
+                        color: opSuccess ? "#4caf50" : "#e53935"
+                        font.pixelSize: 12
+                        visible: opStatusMsg !== "" && !upgrading
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
                     }
 
                     // Upgrade progress
@@ -206,9 +257,9 @@ Item {
                     Rectangle {
                         Layout.fillWidth: true
                         height: 120
-                        color: "#111"
+                        color: Qt.rgba(0, 0, 0, 0.75)
                         radius: 4
-                        visible: upgrading || upgradeLog !== ""
+                        visible: upgrading || (upgradeLog !== "" && upgradeLog !== "\n")
                         clip: true
 
                         ScrollView {
@@ -219,7 +270,7 @@ Item {
                                 id: upgradeLogLabel
                                 width: parent.width
                                 padding: 8
-                                color: "#e0e0e0"
+                                color: "#d0d0d0"
                                 font.family: "monospace"
                                 font.pixelSize: 11
                                 wrapMode: Text.WordWrap
@@ -256,7 +307,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: 12
 
-                        Label { text: "Current:"; color: palette.mid; font.pixelSize: 12; width: 80 }
+                        Label { text: "Current:"; color: palette.mid; font.pixelSize: 12; Layout.preferredWidth: 80 }
                         Label {
                             text: {
                                 if (!statusData) return "—";
@@ -273,16 +324,12 @@ Item {
                         Layout.fillWidth: true
                         spacing: 12
 
-                        Label { text: "Switch to:"; color: palette.mid; font.pixelSize: 12; width: 80 }
+                        Label { text: "Switch to:"; color: palette.mid; font.pixelSize: 12; Layout.preferredWidth: 80 }
 
                         ComboBox {
                             id: deCombo
                             model: systemPage.deImages.map(function(d) { return d.label; })
                             width: 200
-                            onCurrentIndexChanged: {
-                                switchBtn.enabled = true;
-                                switchStatus.text = "";
-                            }
                         }
 
                         Button {
@@ -296,7 +343,24 @@ Item {
                                 return selected && selected.image_name !== base;
                             }
                             onClicked: {
-                                switchStatus.text = "Switch not yet wired — use bootc switch manually.";
+                                if (!statusData) return;
+                                var selected = systemPage.deImages[deCombo.currentIndex];
+                                if (!selected) return;
+                                var parsed = parseImageName(statusData.image || "");
+                                var isNvidia = parsed.isNvidia;
+                                var newName = selected.image_name + (isNvidia ? "-nvidia" : "");
+                                // Derive repo_url from current image (strip image name, replace)
+                                var img = statusData.image || "";
+                                var colonIdx = img.lastIndexOf(":");
+                                var baseUrl = colonIdx > 0 ? img.substring(0, colonIdx) : img;
+                                var slashIdx = baseUrl.lastIndexOf("/");
+                                var repoBase = slashIdx > 0 ? baseUrl.substring(0, slashIdx) : baseUrl;
+                                var newRepoUrl = repoBase + "/" + newName;
+                                backend.upgradeImage("switch", newRepoUrl, "latest");
+                                systemPage.upgrading = true;
+                                upgradePollTimer.start();
+                                switchStatus.text = "Switching to " + selected.label + "…";
+                                switchStatus.color = palette.mid;
                             }
                         }
 
@@ -306,6 +370,7 @@ Item {
                             color: palette.mid
                             font.pixelSize: 11
                             visible: text !== ""
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }
@@ -336,17 +401,21 @@ Item {
                             Layout.fillWidth: true
                         }
 
+                        Label {
+                            text: (statusData && statusData.overlay_count)
+                                  ? statusData.overlay_count + " package" + (statusData.overlay_count !== 1 ? "s" : "")
+                                  : "0 packages"
+                            color: palette.mid
+                            font.pixelSize: 12
+                        }
+
+                        Item { width: 8 }
+
                         Button {
                             text: "Reset Overlay"
-                            contentItem: Label {
-                                text: "Reset Overlay"
-                                color: "#e53935"
-                                font.pixelSize: 12
-                            }
                             flat: true
-                            onClicked: {
-                                // Would invoke pkexec rakuos reset-overlay
-                            }
+                            contentItem: Label { text: "Reset Overlay"; color: "#e53935"; font.pixelSize: 12 }
+                            onClicked: overlayResetConfirmDlg.open()
                         }
                     }
 
@@ -356,20 +425,71 @@ Item {
                         text: "No overlay packages installed."
                         color: palette.mid
                         visible: !statusData || !statusData.overlay_packages || statusData.overlay_packages.length === 0
+                        font.pixelSize: 12
                     }
 
                     Repeater {
                         model: (statusData && statusData.overlay_packages) ? statusData.overlay_packages : []
-
                         Label {
                             text: "• " + modelData
                             font.pixelSize: 12
                         }
+                    }
+
+                    Label {
+                        id: overlayStatusLbl
+                        text: ""
+                        color: palette.mid
+                        font.pixelSize: 11
+                        visible: text !== ""
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
                     }
                 }
             }
         }
     }
 
-    Component.onCompleted: activate()
+    // ── Rollback confirm dialog ───────────────────────────────────────────────
+    Dialog {
+        id: rollbackConfirmDlg
+        title: "Rollback System?"
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        Label {
+            text: "This will roll back to the previous OS image.\nYou will need to reboot after rollback."
+            wrapMode: Text.WordWrap
+            width: 320
+        }
+
+        onAccepted: {
+            backend.rollbackSystem();
+            upgrading = true;
+            upgradeLog = "";
+            opStatusMsg = "";
+            upgradePollTimer.start();
+        }
+    }
+
+    // ── Overlay reset confirm dialog ──────────────────────────────────────────
+    Dialog {
+        id: overlayResetConfirmDlg
+        title: "Reset Overlay Packages?"
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        Label {
+            text: "This will remove all overlay packages and reset\nthe system to the base image state.\nA reboot will be required."
+            wrapMode: Text.WordWrap
+            width: 320
+        }
+
+        onAccepted: {
+            // Reset overlay via pkexec
+            backend.installApp("__reset_overlay__", "native");
+            overlayStatusLbl.text = "Resetting overlay…";
+        }
+    }
+
 }

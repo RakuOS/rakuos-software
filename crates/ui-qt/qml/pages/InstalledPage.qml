@@ -147,7 +147,7 @@ Item {
         }
     }
 
-    Component.onCompleted: activate()
+
 
     // ── Reusable list view component ──────────────────────────────────────────
     component AppListView: Item {
