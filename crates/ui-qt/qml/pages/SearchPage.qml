@@ -124,7 +124,7 @@ Item {
             Label {
                 anchors.centerIn: parent
                 text: "Type to search for apps and packages"
-                color: palette.mid
+                color: root.dimText
                 font.pixelSize: 14
                 visible: searchField.text.trim().length < 2 && !loading
             }
@@ -133,7 +133,7 @@ Item {
             Label {
                 anchors.centerIn: parent
                 text: "No results for \"" + lastQuery + "\""
-                color: palette.mid
+                color: root.dimText
                 font.pixelSize: 14
                 visible: !loading && lastQuery !== "" && searchResults.length === 0
             }
@@ -157,7 +157,7 @@ Item {
                         text: searchResults.length + " result" + (searchResults.length !== 1 ? "s" : "") +
                               " for \"" + lastQuery + "\""
                         font.pixelSize: 12
-                        color: palette.mid
+                        color: root.dimText
                     }
 
                     Repeater {
@@ -174,6 +174,7 @@ Item {
 
                                 AppIcon {
                                     iconPath: modelData.icon_path || ""
+                                    iconUrl: modelData.icon_url || ""
                                     iconName: modelData.name || modelData.id || "?"
                                     size: 36
                                 }
@@ -196,19 +197,13 @@ Item {
                                             height: 16
                                             width: srcLabel.implicitWidth + 10
                                             radius: 3
-                                            color: {
-                                                var src = modelData.source || "";
-                                                if (src === "flatpak") return "#1565c0";
-                                                if (src === "terra")   return "#2e7d32";
-                                                if (src === "webapp")  return "#00695c";
-                                                return "#37474f";
-                                            }
+                                            color: root.sourceColor(modelData.source || "")
                                             anchors.verticalCenter: parent.verticalCenter
 
                                             Label {
                                                 id: srcLabel
                                                 anchors.centerIn: parent
-                                                text: modelData.source || ""
+                                                text: root.sourceLabel(modelData.source || "")
                                                 font.pixelSize: 9
                                                 color: "white"
                                             }
@@ -218,7 +213,7 @@ Item {
                                     Label {
                                         text: modelData.summary || ""
                                         font.pixelSize: 11
-                                        color: rowMouse.containsMouse ? palette.highlightedText : palette.mid
+                                        color: rowMouse.containsMouse ? palette.highlightedText : root.dimText
                                         elide: Text.ElideRight
                                         width: parent.width
                                         visible: text !== ""

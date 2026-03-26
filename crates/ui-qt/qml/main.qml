@@ -16,6 +16,23 @@ ApplicationWindow {
 
     SoftwareBackend { id: backend }
 
+    // Dim secondary text that works in both light and dark mode
+    property color dimText: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.6)
+
+    // Human-readable source label — native and terra are both "RakuOS Linux"
+    function sourceLabel(src) {
+        if (src === "flatpak") return "Flatpak";
+        if (src === "webapp")  return "Web App";
+        return "RakuOS Linux";
+    }
+
+    // Badge color for a source
+    function sourceColor(src) {
+        if (src === "flatpak") return "#1565c0";
+        if (src === "webapp")  return "#00695c";
+        return "#37474f";   // native, terra — same color
+    }
+
     // Global detail page navigation
     property var detailApp: null
     property int previousPage: 0
@@ -238,7 +255,7 @@ ApplicationWindow {
                             text: "Categories"
                             font.pixelSize: 11
                             font.bold: true
-                            color: palette.mid
+                            color: root.dimText
                         }
 
                         Item { width: parent.width; height: 4 }
@@ -268,7 +285,7 @@ ApplicationWindow {
                                         Label {
                                             text: catSection.expanded ? "▾" : "▸"
                                             font.pixelSize: 10
-                                            color: palette.mid
+                                            color: root.dimText
                                             Layout.preferredWidth: 18
                                             horizontalAlignment: Text.AlignHCenter
                                         }
@@ -381,7 +398,7 @@ ApplicationWindow {
                             Label {
                                 text: "🔍"
                                 font.pixelSize: 14
-                                color: palette.mid
+                                color: root.dimText
                             }
 
                             TextField {

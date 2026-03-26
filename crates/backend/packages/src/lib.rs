@@ -2,7 +2,7 @@
 // Mirrors src/backend/packages.py
 
 use anyhow::Result;
-use rakuos_appstream::{AppInfo, get_appstream};
+use rakuos_appstream::{AppInfo, get_appstream, get_rpm_to_flatpak};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
@@ -11,7 +11,8 @@ use std::process::{Command, Stdio};
 // ── Data types ────────────────────────────────────────────────────────────────
 
 /// One installable source for an app (native RPM or a Flatpak remote).
-/// Only populated in `get_app_by_id` for the detail page.
+/// Carries the full display metadata for this source so the UI can update
+/// description, screenshots, version etc. when the user switches sources.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceOption {
     pub id: String,           // package_name for native, app_id for flatpak
@@ -20,6 +21,16 @@ pub struct SourceOption {
     pub installed: bool,
     pub label: String,        // "RakuOS Linux" or "Flathub" / remote title
     pub remote: String,       // flatpak remote name
+    // Full display data for this source — shown when the user picks this source
+    #[serde(default)] pub summary: String,
+    #[serde(default)] pub description: String,
+    #[serde(default)] pub version: String,
+    #[serde(default)] pub developer: String,
+    #[serde(default)] pub url_homepage: String,
+    #[serde(default)] pub license: String,
+    #[serde(default)] pub screenshots: Vec<String>,
+    #[serde(default)] pub icon_path: String,
+    #[serde(default)] pub icon_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,12 +200,17 @@ pub fn get_installed() -> Result<Vec<NativeApp>> {
     }
 
     results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let installed_rpm = get_installed_packages()?;
+    let installed_fp = get_installed_flatpaks();
+    enrich_sources(&mut results, &appstream, &installed_rpm, &installed_fp);
     Ok(results)
 }
 
 /// Return installed Flatpak apps enriched with AppStream metadata.
 pub fn get_installed_flatpaks_enriched() -> Result<Vec<NativeApp>> {
     let appstream = get_appstream();
+    let installed_fp_set = get_installed_flatpaks();
+    let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks_with_info();
 
     let mut results: Vec<NativeApp> = Vec::new();
@@ -221,11 +237,13 @@ pub fn get_installed_flatpaks_enriched() -> Result<Vec<NativeApp>> {
             });
         }
     }
+    enrich_sources(&mut results, &appstream, &installed_rpm, &installed_fp_set);
     Ok(results)
 }
 
 /// Search all apps (native + flatpak) by name, summary, id, or keywords.
 /// Results ranked: name-starts-with > name-contains > id/pkg-contains > summary > keyword.
+/// Apps with both a native and a Flatpak source are merged into one result.
 pub fn search(query: &str) -> Result<Vec<NativeApp>> {
     let appstream = get_appstream();
     let installed_rpm = get_installed_packages()?;
@@ -241,38 +259,63 @@ pub fn search(query: &str) -> Result<Vec<NativeApp>> {
         } else {
             app.installed = installed_rpm.contains(&a.package_name);
         }
-        if !is_browseable(&app) {
-            continue;
-        }
+        if !is_browseable(&app) { continue; }
 
         let name_lc = app.name.to_lowercase();
         let id_lc = app.id.to_lowercase();
         let pkg_lc = app.package_name.to_lowercase();
         let summary_lc = app.summary.to_lowercase();
 
-        let score = if name_lc.starts_with(&q) {
-            6
-        } else if name_lc.contains(&q) {
-            5
-        } else if id_lc.contains(&q) || pkg_lc.contains(&q) {
-            4
-        } else if summary_lc.contains(&q) {
-            3
-        } else if app.keywords.iter().any(|k| k.to_lowercase().contains(&q)) {
-            2
-        } else {
-            continue;
-        };
+        let score = if name_lc.starts_with(&q) { 6 }
+            else if name_lc.contains(&q) { 5 }
+            else if id_lc.contains(&q) || pkg_lc.contains(&q) { 4 }
+            else if summary_lc.contains(&q) { 3 }
+            else if app.keywords.iter().any(|k| k.to_lowercase().contains(&q)) { 2 }
+            else { continue };
 
         scored.push((score, app));
     }
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
-    Ok(scored.into_iter().map(|(_, a)| a).collect())
+    // Merge same-name apps across sources, keeping best score per name
+    let mut by_name: HashMap<String, (u8, NativeApp)> = HashMap::new();
+    for (score, app) in scored {
+        let key = app.name.to_lowercase();
+        if let Some(existing) = by_name.get_mut(&key) {
+            if score > existing.0 {
+                // New entry scores higher — it becomes primary, old becomes alt
+                let old = std::mem::replace(&mut existing.1, app);
+                existing.0 = score;
+                existing.1.sources.push(source_option_from_native_app(&old));
+            } else {
+                existing.1.sources.push(source_option_from_native_app(&app));
+            }
+        } else {
+            by_name.insert(key, (score, app));
+        }
+    }
+
+    // For entries that gained sources, prepend the primary as sources[0]
+    for (_, app) in by_name.values_mut() {
+        if !app.sources.is_empty() {
+            let primary_src = source_option_from_native_app(app);
+            app.sources.insert(0, primary_src);
+            // Prefer native/terra as primary; re-sort if needed
+            app.sources.sort_by_key(|s| if s.source == "flatpak" { 1u8 } else { 0 });
+            // Sync installed flag: true if any source is installed
+            app.installed = app.sources.iter().any(|s| s.installed);
+        }
+    }
+
+    let mut results: Vec<(u8, NativeApp)> = by_name.into_values().collect();
+    results.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
+    let mut apps: Vec<NativeApp> = results.into_iter().map(|(_, a)| a).collect();
+    enrich_sources(&mut apps, &appstream, &installed_rpm, &installed_fp);
+    Ok(apps)
 }
 
 /// Return all apps in a given AppStream category (case-insensitive).
-/// Includes both native and flatpak. Deduplicates by (name_lower, source).
+/// Apps with both a native and a Flatpak source are returned as a single
+/// entry with `sources` populated so the detail page can switch between them.
 pub fn get_by_category(category: &str) -> Result<Vec<NativeApp>> {
     let appstream = get_appstream();
     let installed_rpm = get_installed_packages()?;
@@ -282,12 +325,8 @@ pub fn get_by_category(category: &str) -> Result<Vec<NativeApp>> {
     let mut raw: Vec<NativeApp> = Vec::new();
     for a in appstream.values() {
         let mut app = NativeApp::from(a);
-        if !is_browseable(&app) {
-            continue;
-        }
-        if !app.categories.iter().any(|c| c.to_lowercase() == cat) {
-            continue;
-        }
+        if !is_browseable(&app) { continue; }
+        if !app.categories.iter().any(|c| c.to_lowercase() == cat) { continue; }
         if a.source == "flatpak" {
             app.installed = installed_fp.contains(&a.id);
         } else {
@@ -296,17 +335,9 @@ pub fn get_by_category(category: &str) -> Result<Vec<NativeApp>> {
         raw.push(app);
     }
 
-    // Deduplicate by (name_lower, source) — keep highest package_name
-    let mut seen: HashMap<(String, String), NativeApp> = HashMap::new();
-    for app in raw {
-        let key = (app.name.to_lowercase(), app.source.clone());
-        let entry = seen.entry(key).or_insert_with(|| app.clone());
-        if app.package_name > entry.package_name {
-            *entry = app;
-        }
-    }
-
-    let mut results: Vec<NativeApp> = seen.into_values().collect();
+    let mut results: Vec<NativeApp> =
+        merge_multi_source(raw).into_values().collect();
+    enrich_sources(&mut results, &appstream, &installed_rpm, &installed_fp);
     results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(results)
 }
@@ -318,7 +349,14 @@ pub fn get_app_by_id(app_id: &str) -> Result<Option<NativeApp>> {
     let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks();
 
-    let Some(a) = appstream.get(app_id) else {
+    // Try multiple key patterns:
+    // - Plain key (most apps)
+    // - "native:{id}" (injected stubs from flatpak-to-rpm.json)
+    // - "flatpak:{id}" (flatpak entries re-keyed by inject_native_stubs)
+    let a = appstream.get(app_id)
+        .or_else(|| appstream.get(&format!("native:{}", app_id)))
+        .or_else(|| appstream.get(&format!("flatpak:{}", app_id)));
+    let Some(a) = a else {
         return Ok(None);
     };
 
@@ -335,7 +373,95 @@ pub fn get_app_by_id(app_id: &str) -> Result<Option<NativeApp>> {
     Ok(Some(app))
 }
 
-/// Build the list of available install sources for a given app.
+/// Build a `SourceOption` from a `NativeApp`, carrying its full display data.
+fn source_option_from_native_app(app: &NativeApp) -> SourceOption {
+    let remote = if app.source == "flatpak" { "flathub" } else { "" };
+    SourceOption {
+        id: app.id.clone(),
+        source: app.source.clone(),
+        package_name: app.package_name.clone(),
+        installed: app.installed,
+        label: source_label(&app.source, remote),
+        remote: remote.to_string(),
+        summary: app.summary.clone(),
+        description: app.description.clone(),
+        version: app.version.clone(),
+        developer: app.developer.clone(),
+        url_homepage: app.url_homepage.clone(),
+        license: app.license.clone(),
+        screenshots: app.screenshots.clone(),
+        icon_path: app.icon_path.clone(),
+        icon_url: app.icon_url.clone(),
+    }
+}
+
+/// Build a `SourceOption` from an `AppInfo`, carrying its full display data.
+fn source_option_from_app_info(
+    info: &AppInfo,
+    installed: bool,
+    remote: &str,
+) -> SourceOption {
+    SourceOption {
+        id: info.id.clone(),
+        source: info.source.clone(),
+        package_name: info.package_name.clone(),
+        installed,
+        label: source_label(&info.source, remote),
+        remote: remote.to_string(),
+        summary: info.summary.clone(),
+        description: info.description.clone(),
+        version: info.version.clone(),
+        developer: info.developer.clone(),
+        url_homepage: info.url_homepage.clone(),
+        license: info.license.clone(),
+        screenshots: info.screenshots.clone(),
+        icon_path: info.icon_path.clone(),
+        icon_url: info.icon_url.clone(),
+    }
+}
+
+/// Merge a flat list of apps (possibly with duplicate names from different sources)
+/// into a map keyed by name_lower. When the same app has both a native/terra entry
+/// and a flatpak entry, they are merged: native is primary, flatpak becomes sources[1].
+fn merge_multi_source(apps: Vec<NativeApp>) -> HashMap<String, NativeApp> {
+    // Group by name_lower
+    let mut by_name: HashMap<String, Vec<NativeApp>> = HashMap::new();
+    for app in apps {
+        by_name.entry(app.name.to_lowercase()).or_default().push(app);
+    }
+
+    let mut out: HashMap<String, NativeApp> = HashMap::new();
+    for (key, mut group) in by_name {
+        if group.len() == 1 {
+            out.insert(key, group.remove(0));
+            continue;
+        }
+
+        // Sort: native/terra first so native is primary
+        group.sort_by_key(|a| if a.source == "flatpak" { 1u8 } else { 0 });
+
+        let mut primary = group.remove(0);
+        let mut sources: Vec<SourceOption> = Vec::new();
+        sources.push(source_option_from_native_app(&primary));
+        for alt in &group {
+            sources.push(source_option_from_native_app(alt));
+            // Borrow screenshots/description from flatpak if primary lacks them
+            if primary.screenshots.is_empty() && !alt.screenshots.is_empty() {
+                primary.screenshots = alt.screenshots.clone();
+            }
+            if primary.description.is_empty() && !alt.description.is_empty() {
+                primary.description = alt.description.clone();
+            }
+        }
+        primary.sources = sources;
+        // Installed if any source is installed
+        primary.installed = primary.sources.iter().any(|s| s.installed);
+        out.insert(key, primary);
+    }
+    out
+}
+
+/// Build the list of available install sources for a given app (used by get_app_by_id).
 /// Primary source is always first; alternate (native↔flatpak) is appended if found.
 fn build_sources(
     primary: &NativeApp,
@@ -346,50 +472,118 @@ fn build_sources(
 ) -> Vec<SourceOption> {
     let mut sources = Vec::new();
 
-    sources.push(SourceOption {
-        id: primary.id.clone(),
-        source: primary.source.clone(),
-        package_name: primary.package_name.clone(),
-        installed: primary.installed,
-        label: source_label(&primary.source, ""),
-        remote: String::new(),
-    });
+    sources.push(source_option_from_native_app(primary));
 
     if primary.source == "flatpak" {
-        // Look for native alternate: injected stubs are stored as "native:<rpm_name>"
+        // Look for native alternate: injected stubs, pkg match, or name match
         let pkg = &primary.package_name;
         let native_key = format!("native:{}", pkg);
-        let alt = appstream.get(&native_key).or_else(|| {
-            appstream.values().find(|a| {
-                a.source != "flatpak" && a.package_name == *pkg
-            })
-        });
+        let name_lc = primary.name.to_lowercase();
+        let alt = appstream.get(&native_key)
+            .or_else(|| appstream.values().find(|a| a.source != "flatpak" && a.package_name == *pkg))
+            .or_else(|| appstream.values().find(|a| {
+                a.source != "flatpak"
+                    && a.name.to_lowercase() == name_lc
+                    && !a.package_name.is_empty()
+                    && !a.pkg_name_guessed
+            }));
         if let Some(nat) = alt {
-            sources.push(SourceOption {
-                id: nat.package_name.clone(),
-                source: nat.source.clone(),
-                package_name: nat.package_name.clone(),
-                installed: installed_rpm.contains(&nat.package_name),
-                label: "RakuOS Linux".to_string(),
-                remote: String::new(),
-            });
+            sources.push(source_option_from_app_info(
+                nat,
+                installed_rpm.contains(&nat.package_name),
+                "",
+            ));
         }
     } else {
-        // Native/terra — look for flatpak alternate stored as "flatpak:<app_id>"
+        // Native/terra — look for flatpak alternate:
+        // 1. Direct "flatpak:{app_id}" key
+        // 2. Reverse flatpak-to-rpm lookup: package_name → flatpak_id → "flatpak:{flatpak_id}"
+        // 3. Name-based fallback
         let fp_key = format!("flatpak:{}", app_id);
-        if let Some(fp) = appstream.get(&fp_key) {
-            sources.push(SourceOption {
-                id: fp.id.clone(),
-                source: "flatpak".to_string(),
-                package_name: fp.package_name.clone(),
-                installed: installed_fp.contains(&fp.id),
-                label: "Flathub".to_string(),
-                remote: "flathub".to_string(),
+        let name_lc = primary.name.to_lowercase();
+        let rpm_to_fp = get_rpm_to_flatpak();
+        let fp_via_rpm = rpm_to_fp.get(&primary.package_name)
+            .and_then(|fp_id| appstream.get(&format!("flatpak:{}", fp_id)));
+        let alt = appstream.get(&fp_key)
+            .or(fp_via_rpm)
+            .or_else(|| {
+                appstream.values().find(|info| {
+                    info.source == "flatpak"
+                        && info.name.to_lowercase() == name_lc
+                        && !info.package_name.is_empty()
+                })
             });
+        if let Some(fp) = alt {
+            sources.push(source_option_from_app_info(
+                fp,
+                installed_fp.contains(&fp.id),
+                "flathub",
+            ));
         }
     }
 
+    // Native/RakuOS Linux always first in the dropdown
+    sources.sort_by_key(|s| if s.source == "flatpak" { 1u8 } else { 0 });
     sources
+}
+
+/// For single-source apps (sources is empty after merge_multi_source), look for an
+/// alternate source in the full appstream cache by name and populate sources if found.
+/// This handles the case where only one source appears in a given category query.
+fn enrich_sources(
+    apps: &mut Vec<NativeApp>,
+    appstream: &HashMap<String, AppInfo>,
+    installed_rpm: &HashSet<String>,
+    installed_fp: &HashSet<String>,
+) {
+    for app in apps.iter_mut() {
+        if !app.sources.is_empty() {
+            continue; // already merged from merge_multi_source
+        }
+        let name_lc = app.name.to_lowercase();
+
+        if app.source == "flatpak" {
+            // Look for native alternate by name
+            let alt = appstream.values().find(|info| {
+                info.source != "flatpak"
+                    && info.name.to_lowercase() == name_lc
+                    && !info.package_name.is_empty()
+                    && !info.pkg_name_guessed
+            });
+            if let Some(nat) = alt {
+                let nat_installed = installed_rpm.contains(&nat.package_name);
+                let fp_src = source_option_from_native_app(app);
+                let nat_src = source_option_from_app_info(nat, nat_installed, "");
+                app.sources = vec![nat_src, fp_src]; // native first
+                app.installed = app.sources.iter().any(|s| s.installed);
+            }
+        } else {
+            // Native — look for flatpak alternate:
+            // 1. Direct "flatpak:{id}" key
+            // 2. Reverse flatpak-to-rpm lookup by package_name
+            // 3. Name-based fallback
+            let fp_key = format!("flatpak:{}", app.id);
+            let rpm_to_fp = get_rpm_to_flatpak();
+            let fp_via_rpm = rpm_to_fp.get(&app.package_name)
+                .and_then(|fp_id| appstream.get(&format!("flatpak:{}", fp_id)));
+            let alt = appstream.get(&fp_key)
+                .or(fp_via_rpm)
+                .or_else(|| {
+                    appstream.values().find(|info| {
+                        info.source == "flatpak"
+                            && info.name.to_lowercase() == name_lc
+                            && !info.package_name.is_empty()
+                    })
+                });
+            if let Some(fp) = alt {
+                let fp_installed = installed_fp.contains(&fp.id);
+                let nat_src = source_option_from_native_app(app);
+                let fp_src = source_option_from_app_info(fp, fp_installed, "flathub");
+                app.sources = vec![nat_src, fp_src];
+                app.installed = app.sources.iter().any(|s| s.installed);
+            }
+        }
+    }
 }
 
 /// Human-readable label for an install source.

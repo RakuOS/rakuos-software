@@ -99,7 +99,7 @@ Item {
 
                     Label {
                         text: "How often RakuOS Software checks for available updates in the background."
-                        color: palette.mid
+                        color: root.dimText
                         font.pixelSize: 12
                         wrapMode: Text.WordWrap
                         width: parent.width
@@ -157,7 +157,7 @@ Item {
 
                     Label {
                         text: "System image updates always require manual approval and a reboot."
-                        color: palette.mid
+                        color: root.dimText
                         font.pixelSize: 11
                         wrapMode: Text.WordWrap
                         width: parent.width
@@ -234,7 +234,7 @@ Item {
                                 Label {
                                     text: "Manage Flatpak repositories. System remotes are available to all users."
                                     font.pixelSize: 11
-                                    color: palette.mid
+                                    color: root.dimText
                                     wrapMode: Text.WordWrap
                                     width: parent.width
                                 }
@@ -288,7 +288,7 @@ Item {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 topPadding: 40
                                 text: "No Flatpak remotes configured."
-                                color: palette.mid
+                                color: root.dimText
                                 visible: flatpakTab.remotes.length === 0
                             }
 
@@ -353,7 +353,7 @@ Item {
                                             Label {
                                                 text: modelData.url || ""
                                                 font.pixelSize: 11
-                                                color: palette.mid
+                                                color: root.dimText
                                                 visible: text !== ""
                                                 elide: Text.ElideRight
                                                 width: parent.width
@@ -498,7 +498,7 @@ Item {
                                 Label {
                                     text: "Manage firmware update sources via fwupd. LVFS provides updates from hardware vendors."
                                     font.pixelSize: 11
-                                    color: palette.mid
+                                    color: root.dimText
                                     wrapMode: Text.WordWrap
                                     width: parent.width
                                 }
@@ -565,7 +565,7 @@ Item {
                                 text: "Remotes"
                                 font.pixelSize: 12
                                 font.bold: true
-                                color: palette.mid
+                                color: root.dimText
                                 visible: firmwareTab.firmwareData && firmwareTab.firmwareData.remotes &&
                                          firmwareTab.firmwareData.remotes.length > 0
                             }
@@ -575,7 +575,7 @@ Item {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 topPadding: 40
                                 text: "No firmware remotes configured."
-                                color: palette.mid
+                                color: root.dimText
                                 visible: !firmwareTab.firmwareData ||
                                          !firmwareTab.firmwareData.remotes ||
                                          firmwareTab.firmwareData.remotes.length === 0
@@ -629,7 +629,7 @@ Item {
                                                 Label {
                                                     text: modelData.kind || ""
                                                     font.pixelSize: 10
-                                                    color: palette.mid
+                                                    color: root.dimText
                                                     visible: text !== ""
                                                 }
                                             }
@@ -637,7 +637,7 @@ Item {
                                             Label {
                                                 text: modelData.url || modelData.metadata_uri || ""
                                                 font.pixelSize: 11
-                                                color: palette.mid
+                                                color: root.dimText
                                                 visible: text !== ""
                                                 elide: Text.ElideRight
                                                 width: parent.width
@@ -646,7 +646,7 @@ Item {
                                             Label {
                                                 text: modelData.last_updated ? "Updated: " + modelData.last_updated : ""
                                                 font.pixelSize: 10
-                                                color: palette.mid
+                                                color: root.dimText
                                                 visible: text !== ""
                                             }
 
@@ -670,7 +670,7 @@ Item {
                                        ? firmwareTab.firmwareData.vendor_dirs.length : 0) + " found)"
                                 font.pixelSize: 12
                                 font.bold: true
-                                color: palette.mid
+                                color: root.dimText
                                 visible: firmwareTab.firmwareData && firmwareTab.firmwareData.vendor_dirs &&
                                          firmwareTab.firmwareData.vendor_dirs.length > 0
                             }
@@ -705,7 +705,7 @@ Item {
                                             Label {
                                                 text: modelData.filename || ""
                                                 font.pixelSize: 10
-                                                color: palette.mid
+                                                color: root.dimText
                                                 visible: text !== ""
                                                 elide: Text.ElideRight
                                                 width: parent.width

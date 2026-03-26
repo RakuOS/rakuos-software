@@ -16,12 +16,28 @@ use std::sync::{Arc, OnceLock};
 // Parsed once on first call, shared across all callers via Arc (no re-parsing).
 
 static APPSTREAM_CACHE: OnceLock<Arc<HashMap<String, AppInfo>>> = OnceLock::new();
+/// Reverse of flatpak-to-rpm.json: rpm_name → flatpak_id (lower-cased flatpak id).
+static RPM_TO_FLATPAK_CACHE: OnceLock<Arc<HashMap<String, String>>> = OnceLock::new();
 
 /// Returns a reference-counted handle to the shared appstream data.
 /// First call parses all XML files; subsequent calls return in nanoseconds.
 pub fn get_appstream() -> Arc<HashMap<String, AppInfo>> {
     APPSTREAM_CACHE
         .get_or_init(|| Arc::new(load_appstream_inner().unwrap_or_default()))
+        .clone()
+}
+
+/// Returns the reverse of flatpak-to-rpm.json: maps rpm_package_name → flatpak_app_id.
+/// Used to find the flatpak counterpart of a native stub by its package name.
+pub fn get_rpm_to_flatpak() -> Arc<HashMap<String, String>> {
+    RPM_TO_FLATPAK_CACHE
+        .get_or_init(|| {
+            let map: HashMap<String, String> = load_flatpak_to_rpm()
+                .into_iter()
+                .map(|(fp_id, rpm)| (rpm, fp_id))
+                .collect();
+            Arc::new(map)
+        })
         .clone()
 }
 
@@ -191,6 +207,21 @@ fn load_appstream_inner() -> Result<HashMap<String, AppInfo>> {
                 &terra_dirs,
             );
         }
+        // Synthesize icon_url fallback for apps without a local icon:
+        //   org.kde.*  → apps.kde.org SVG (mirrors Python _FetchThread logic)
+        //   other Flatpak → Flathub CDN PNG (predictable URL pattern)
+        if app.icon_path.is_empty() && app.icon_url.is_empty() {
+            let clean_id = app.id.trim_start_matches("flatpak:").trim_end_matches(".desktop");
+            if clean_id.starts_with("org.kde.") {
+                app.icon_url = format!("https://apps.kde.org/app-icons/{}.svg", clean_id);
+            } else if app.source == "flatpak" {
+                // Flathub CDN: /repo/appstream/x86_64/icons/128x128/{id}.png
+                app.icon_url = format!(
+                    "https://dl.flathub.org/repo/appstream/x86_64/icons/128x128/{}.png",
+                    clean_id
+                );
+            }
+        }
     }
 
     log::info!(
@@ -343,6 +374,7 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
     let mut in_description = false;
     let mut in_pkgname = false;
     let mut in_developer = false;
+    let mut in_developer_block = false; // true while inside <developer>...</developer> (newer format)
     let mut in_category = false;
     let mut in_keyword = false;
     let mut in_icon_cached = false;
@@ -378,7 +410,12 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                         lang_ok = !e.attributes().any(|a| {
                             a.map(|a| a.key.as_ref() == b"xml:lang").unwrap_or(false)
                         });
-                        in_name = lang_ok;
+                        if in_developer_block {
+                            // <name> inside <developer> → developer name, not app name
+                            in_developer = lang_ok;
+                        } else {
+                            in_name = lang_ok;
+                        }
                     }
                     b"summary" if current.is_some() => {
                         lang_ok = !e.attributes().any(|a| {
@@ -393,16 +430,27 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                         in_description = lang_ok;
                     }
                     b"pkgname" if current.is_some() => in_pkgname = true,
-                    b"developer" | b"developer_name" if current.is_some() => {
+                    b"developer" if current.is_some() => {
+                        // Newer AppStream format: <developer><name>...</name></developer>
+                        // Don't set in_developer here; the inner <name> will do it.
+                        in_developer_block = true;
+                    }
+                    b"developer_name" if current.is_some() => {
+                        // Older AppStream format: <developer_name>...</developer_name>
                         lang_ok = !e.attributes().any(|a| {
                             a.map(|a| a.key.as_ref() == b"xml:lang").unwrap_or(false)
                         });
                         in_developer = lang_ok;
                     }
                     b"icon" if current.is_some() => {
+                        // "cached" and "stock" both provide a local icon name/file to search for.
+                        // "local" provides an absolute path — treat the same way.
                         in_icon_cached = e.attributes().any(|a| {
                             a.map(|a| {
-                                a.key.as_ref() == b"type" && a.value.as_ref() == b"cached"
+                                a.key.as_ref() == b"type" && matches!(
+                                    a.value.as_ref(),
+                                    b"cached" | b"stock" | b"local"
+                                )
                             })
                             .unwrap_or(false)
                         });
@@ -485,7 +533,9 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                 }
             }
             Ok(Event::End(ref e)) => {
-                if e.name().as_ref() == b"component" {
+                if e.name().as_ref() == b"developer" {
+                    in_developer_block = false;
+                } else if e.name().as_ref() == b"component" {
                     if let Some(mut app) = current.take() {
                         if !app.id.is_empty() {
                             // For Flatpak apps: icon is always {app_id}.png
@@ -564,14 +614,16 @@ fn inject_native_stubs(apps: &mut HashMap<String, AppInfo>) {
     }
 
     let mut stubs: Vec<(String, AppInfo)> = Vec::new();
+    // Flatpak entries that need to be re-keyed to "flatpak:{id}" prefix
+    let mut rekeys: Vec<(String, String)> = Vec::new(); // (old_key, new_key)
 
     for (fp_id_lower, rpm_name) in &fp_to_rpm {
         // Find the flatpak entry by case-insensitive ID match
-        let fp_entry = apps.values().find(|a| {
+        let fp_entry = apps.iter().find(|(_, a)| {
             a.source == "flatpak" && a.id.to_lowercase() == *fp_id_lower
-        }).cloned();
+        }).map(|(k, a)| (k.clone(), a.clone()));
 
-        let Some(fp_entry) = fp_entry else { continue };
+        let Some((fp_key, fp_entry)) = fp_entry else { continue };
 
         // Skip if a native entry already exists with this rpm_name as package_name
         let already_exists = apps.values().any(|a| {
@@ -588,10 +640,22 @@ fn inject_native_stubs(apps: &mut HashMap<String, AppInfo>) {
         stub.id = rpm_name.clone();
         stub.pkg_name_guessed = false; // explicit mapping, not guessed
         stubs.push((format!("native:{}", rpm_name), stub));
+
+        // Re-key the flatpak from its plain ID to "flatpak:{id}" so that
+        // build_sources / enrich_sources can find it via the standard prefix pattern
+        let prefixed_key = format!("flatpak:{}", fp_entry.id);
+        if fp_key != prefixed_key && !apps.contains_key(&prefixed_key) {
+            rekeys.push((fp_key, prefixed_key));
+        }
     }
 
     for (key, stub) in stubs {
         apps.insert(key, stub);
+    }
+    for (old_key, new_key) in rekeys {
+        if let Some(fp) = apps.remove(&old_key) {
+            apps.insert(new_key, fp);
+        }
     }
 }
 

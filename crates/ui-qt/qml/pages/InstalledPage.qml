@@ -160,7 +160,7 @@ Item {
         Label {
             anchors.centerIn: parent
             text: listView.emptyText
-            color: palette.mid
+            color: root.dimText
             visible: listView.apps.length === 0
         }
 
@@ -194,6 +194,7 @@ Item {
 
                             AppIcon {
                                 iconPath: modelData.icon_path || ""
+                                iconUrl: modelData.icon_url || ""
                                 iconName: modelData.name || modelData.id || "?"
                                 size: 32
                             }
@@ -213,7 +214,7 @@ Item {
                                     text: (modelData.summary || modelData.description || "").substring(0, 80) +
                                           ((modelData.summary || "").length > 80 ? "…" : "")
                                     font.pixelSize: 11
-                                    color: palette.mid
+                                    color: root.dimText
                                     visible: text !== ""
                                     elide: Text.ElideRight
                                     width: parent.width
@@ -223,7 +224,7 @@ Item {
                             Label {
                                 text: modelData.version || ""
                                 font.pixelSize: 11
-                                color: palette.mid
+                                color: root.dimText
                                 visible: text !== ""
                             }
 

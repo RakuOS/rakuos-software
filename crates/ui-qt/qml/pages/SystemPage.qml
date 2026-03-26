@@ -220,7 +220,7 @@ Item {
 
                             Label {
                                 text: modelData.label
-                                color: palette.mid
+                                color: root.dimText
                                 font.pixelSize: 12
                                 Layout.preferredWidth: 80
                             }
@@ -307,7 +307,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: 12
 
-                        Label { text: "Current:"; color: palette.mid; font.pixelSize: 12; Layout.preferredWidth: 80 }
+                        Label { text: "Current:"; color: root.dimText; font.pixelSize: 12; Layout.preferredWidth: 80 }
                         Label {
                             text: {
                                 if (!statusData) return "—";
@@ -324,7 +324,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: 12
 
-                        Label { text: "Switch to:"; color: palette.mid; font.pixelSize: 12; Layout.preferredWidth: 80 }
+                        Label { text: "Switch to:"; color: root.dimText; font.pixelSize: 12; Layout.preferredWidth: 80 }
 
                         ComboBox {
                             id: deCombo
@@ -360,14 +360,14 @@ Item {
                                 systemPage.upgrading = true;
                                 upgradePollTimer.start();
                                 switchStatus.text = "Switching to " + selected.label + "…";
-                                switchStatus.color = palette.mid;
+                                switchStatus.color = root.dimText;
                             }
                         }
 
                         Label {
                             id: switchStatus
                             text: ""
-                            color: palette.mid
+                            color: root.dimText
                             font.pixelSize: 11
                             visible: text !== ""
                             wrapMode: Text.WordWrap
@@ -405,7 +405,7 @@ Item {
                             text: (statusData && statusData.overlay_count)
                                   ? statusData.overlay_count + " package" + (statusData.overlay_count !== 1 ? "s" : "")
                                   : "0 packages"
-                            color: palette.mid
+                            color: root.dimText
                             font.pixelSize: 12
                         }
 
@@ -423,7 +423,7 @@ Item {
 
                     Label {
                         text: "No overlay packages installed."
-                        color: palette.mid
+                        color: root.dimText
                         visible: !statusData || !statusData.overlay_packages || statusData.overlay_packages.length === 0
                         font.pixelSize: 12
                     }
@@ -439,7 +439,7 @@ Item {
                     Label {
                         id: overlayStatusLbl
                         text: ""
-                        color: palette.mid
+                        color: root.dimText
                         font.pixelSize: 11
                         visible: text !== ""
                         wrapMode: Text.WordWrap

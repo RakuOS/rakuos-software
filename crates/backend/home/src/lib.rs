@@ -226,8 +226,10 @@ fn resolve_one<'a>(id: &str, appstream: &'a HashMap<String, AppInfo>) -> Option<
     for candidate in &[
         clean_lc.clone(),
         format!("{}.desktop", clean_lc),
+        format!("flatpak:{}", clean_lc),
         id.to_string(),
         format!("{}.desktop", id),
+        format!("flatpak:{}", id),
     ] {
         if let Some(a) = appstream.get(candidate.as_str()) {
             return Some(a);

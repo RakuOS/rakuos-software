@@ -134,6 +134,7 @@ Item {
 
                                     AppIcon {
                                         iconPath: modelData.icon_path || ""
+                                        iconUrl: modelData.icon_url || ""
                                         iconName: modelData.name || modelData.id || "?"
                                         size: 56
                                         anchors.horizontalCenter: parent.horizontalCenter
@@ -174,7 +175,7 @@ Item {
                     Label {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: "Could not load home page data."
-                        color: palette.mid
+                        color: root.dimText
                     }
 
                     Button {

@@ -12,22 +12,72 @@ Item {
     function loadApp(appData) {
         app = appData;
         screenshotIndex = 0;
-        screenshotModel.clear();
-        if (app && app.screenshots) {
-            for (var i = 0; i < Math.min(app.screenshots.length, 8); i++) {
-                screenshotModel.append({ url: app.screenshots[i] });
+
+        // Default: RakuOS Linux (index 0, always native).
+        // Exception: if native is NOT installed but another source IS, select that source.
+        // If both are installed, prefer RakuOS Linux (index 0).
+        var bestIdx = 0;
+        if (Array.isArray(appData.sources) && appData.sources.length > 1) {
+            if (!appData.sources[0].installed) {
+                for (var i = 1; i < appData.sources.length; i++) {
+                    if (appData.sources[i].installed) {
+                        bestIdx = i;
+                        break;
+                    }
+                }
             }
         }
-        if (sourceSelector.visible) {
-            sourceSelector.currentIndex = 0;
-        }
+        sourceSelector.currentIndex = bestIdx;
+        _reloadScreenshots();
 
-        // If this is partial data (HomeApp from home/search card has no
-        // 'installed' field), fetch the full record in the background.
-        if (app && app.id && typeof app.installed === 'undefined') {
+        // Always fetch the full record: ensures sources (native + flatpak dropdown)
+        // are always populated even when the listing only returned one source.
+        if (app && app.id) {
             backend.loadAppById(app.id);
             detailFetchTimer.start();
         }
+    }
+
+    // Reload screenshotModel from the currently selected source (or primary app).
+    function _reloadScreenshots() {
+        screenshotIndex = 0;
+        screenshotModel.clear();
+        var src = selectedSource();
+        var shots = [];
+        if (src && src !== app && Array.isArray(src.screenshots) && src.screenshots.length > 0) {
+            shots = src.screenshots;
+        } else if (app && app.screenshots) {
+            shots = app.screenshots;
+        }
+        for (var i = 0; i < Math.min(shots.length, 8); i++) {
+            screenshotModel.append({ url: shots[i] });
+        }
+    }
+
+    // Computed display object: merges selected source's content fields over the
+    // primary app so all labels update reactively when the source selector changes.
+    property var displayApp: {
+        var _idx = sourceSelector.currentIndex; // reactive dependency
+        if (!app) return null;
+        if (!Array.isArray(app.sources) || app.sources.length <= 1) return app;
+        var src = app.sources[_idx] || app.sources[0];
+        if (!src) return app;
+        return {
+            name:         app.name,
+            id:           src.id          || app.id,
+            icon_path:    src.icon_path   || app.icon_path,
+            icon_url:     src.icon_url    || app.icon_url,
+            summary:      src.summary     || app.summary,
+            description:  src.description || app.description,
+            developer:    src.developer   || app.developer,
+            version:      src.version     || app.version,
+            license:      src.license     || app.license,
+            url_homepage: src.url_homepage|| app.url_homepage,
+            package_name: src.package_name|| app.package_name,
+            source:       src.source      || app.source,
+            installed:    src.installed,
+            sources:      app.sources,
+        };
     }
 
     // Async full-detail fetch — fires when detail page receives partial data
@@ -45,15 +95,8 @@ Item {
                         var fullApp = JSON.parse(json);
                         if (fullApp && fullApp.id) {
                             detailPage.app = fullApp;
-                            if (fullApp.screenshots && fullApp.screenshots.length > 0
-                                    && screenshotModel.count === 0) {
-                                for (var i = 0; i < Math.min(fullApp.screenshots.length, 8); i++) {
-                                    screenshotModel.append({ url: fullApp.screenshots[i] });
-                                }
-                            }
-                            if (sourceSelector.visible) {
-                                sourceSelector.currentIndex = 0;
-                            }
+                            // Reload screenshots — sources may now carry richer data
+                            detailPage._reloadScreenshots();
                         }
                     } catch(e) {}
                 }
@@ -116,24 +159,24 @@ Item {
                     }
                 }
 
-                // Install / Remove button
+                // Install / Remove button — updates reactively when source changes
                 Button {
                     id: installBtn
                     visible: app != null
-                    property var src: detailPage.selectedSource()
                     Connections {
                         target: sourceSelector
-                        function onCurrentIndexChanged() { installBtn.src = detailPage.selectedSource(); }
+                        function onCurrentIndexChanged() {
+                            detailPage._reloadScreenshots();
+                        }
                     }
-                    text: src != null && src.installed === true ? "Remove" : "Install"
-                    highlighted: src != null && src.installed !== true
+                    text: displayApp != null && displayApp.installed === true ? "Remove" : "Install"
+                    highlighted: displayApp == null || displayApp.installed !== true
                     onClicked: {
-                        var s = detailPage.selectedSource();
-                        if (!s) return;
-                        if (s.installed) {
-                            backend.removeApp(s.id || "", s.source || "");
+                        if (!displayApp) return;
+                        if (displayApp.installed) {
+                            backend.removeApp(displayApp.id || "", displayApp.source || "");
                         } else {
-                            backend.installApp(s.id || "", s.source || "");
+                            backend.installApp(displayApp.id || "", displayApp.source || "");
                         }
                     }
                 }
@@ -167,7 +210,8 @@ Item {
                         spacing: 20
 
                         AppIcon {
-                            iconPath: app ? (app.icon_path || "") : ""
+                            iconPath: displayApp ? (displayApp.icon_path || "") : ""
+                            iconUrl: displayApp ? (displayApp.icon_url || "") : ""
                             iconName: app ? (app.name || app.id || "?") : "?"
                             size: 80
                             Layout.alignment: Qt.AlignTop
@@ -187,18 +231,18 @@ Item {
                             }
 
                             Label {
-                                text: app ? (app.summary || "") : ""
+                                text: displayApp ? (displayApp.summary || "") : ""
                                 font.pixelSize: 13
-                                color: palette.mid
+                                color: root.dimText
                                 wrapMode: Text.WordWrap
                                 Layout.fillWidth: true
                                 visible: text !== ""
                             }
 
                             Label {
-                                text: app ? (app.developer || "") : ""
+                                text: displayApp ? (displayApp.developer || "") : ""
                                 font.pixelSize: 11
-                                color: palette.mid
+                                color: root.dimText
                                 visible: text !== ""
                             }
 
@@ -208,37 +252,34 @@ Item {
                                 Layout.topMargin: 4
 
                                 Rectangle {
-                                    visible: app != null && (app.source || "") !== ""
+                                    visible: displayApp != null && (displayApp.source || "") !== ""
                                     radius: 4
-                                    color: {
-                                        if (!app) return palette.button;
-                                        if (app.source === "flatpak") return "#1565c0";
-                                        if (app.source === "terra") return "#2e7d32";
-                                        return "#37474f";
-                                    }
+                                    color: displayApp ? root.sourceColor(displayApp.source) : palette.button
                                     width: sourceLbl.implicitWidth + 12
                                     height: sourceLbl.implicitHeight + 6
+                                    // Hide when sourceSelector is shown (redundant info)
+                                    opacity: sourceSelector.visible ? 0 : 1
 
                                     Label {
                                         id: sourceLbl
                                         anchors.centerIn: parent
-                                        text: app ? (app.source || "") : ""
+                                        text: displayApp ? root.sourceLabel(displayApp.source) : ""
                                         font.pixelSize: 10
                                         color: "white"
                                     }
                                 }
 
                                 Label {
-                                    text: app && app.version ? "v" + app.version : ""
+                                    text: displayApp && displayApp.version ? "v" + displayApp.version : ""
                                     font.pixelSize: 11
-                                    color: palette.mid
+                                    color: root.dimText
                                     visible: text !== ""
                                 }
 
                                 Label {
-                                    text: app && app.license ? app.license : ""
+                                    text: displayApp && displayApp.license ? displayApp.license : ""
                                     font.pixelSize: 11
-                                    color: palette.mid
+                                    color: root.dimText
                                     visible: text !== ""
                                 }
                             }
@@ -275,7 +316,6 @@ Item {
 
                     Button {
                         anchors { left: parent.left; verticalCenter: mainShot.verticalCenter; leftMargin: 34 }
-                        text: "‹"
                         visible: screenshotModel.count > 1
                         enabled: detailPage.screenshotIndex > 0
                         onClicked: detailPage.screenshotIndex--
@@ -285,11 +325,17 @@ Item {
                             radius: 22
                             color: parent.enabled ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.2)"
                         }
+                        contentItem: Label {
+                            text: "‹"
+                            color: "white"
+                            font.pixelSize: 22
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
                     }
 
                     Button {
                         anchors { right: parent.right; verticalCenter: mainShot.verticalCenter; rightMargin: 34 }
-                        text: "›"
                         visible: screenshotModel.count > 1
                         enabled: detailPage.screenshotIndex < screenshotModel.count - 1
                         onClicked: detailPage.screenshotIndex++
@@ -298,6 +344,13 @@ Item {
                         background: Rectangle {
                             radius: 22
                             color: parent.enabled ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.2)"
+                        }
+                        contentItem: Label {
+                            text: "›"
+                            color: "white"
+                            font.pixelSize: 22
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
                         }
                     }
 
@@ -322,7 +375,7 @@ Item {
                     width: parent.width - 56
                     anchors.horizontalCenter: parent.horizontalCenter
                     spacing: 8
-                    visible: app != null && (app.description || "") !== ""
+                    visible: displayApp != null && (displayApp.description || "") !== ""
 
                     Label {
                         text: "About this app"
@@ -331,7 +384,7 @@ Item {
                     }
 
                     Label {
-                        text: app ? (app.description || "") : ""
+                        text: displayApp ? (displayApp.description || "") : ""
                         font.pixelSize: 13
                         wrapMode: Text.WordWrap
                         width: parent.width
@@ -346,15 +399,15 @@ Item {
                     width: parent.width - 56
                     anchors.horizontalCenter: parent.horizontalCenter
                     spacing: 12
-                    visible: app != null
+                    visible: displayApp != null
 
                     Repeater {
                         model: {
-                            if (!app) return [];
+                            if (!displayApp) return [];
                             var cards = [];
-                            if (app.url_homepage) cards.push({ label: "Website", value: app.url_homepage });
-                            if (app.package_name) cards.push({ label: "Package", value: app.package_name });
-                            if (app.developer)    cards.push({ label: "Developer", value: app.developer });
+                            if (displayApp.url_homepage) cards.push({ label: "Website", value: displayApp.url_homepage });
+                            if (displayApp.package_name) cards.push({ label: displayApp.source === "flatpak" ? "Flatpak ID" : "Package", value: displayApp.package_name });
+                            if (displayApp.developer)    cards.push({ label: "Developer", value: displayApp.developer });
                             return cards;
                         }
 
@@ -369,7 +422,7 @@ Item {
                             Column {
                                 anchors { fill: parent; margins: 10 }
                                 spacing: 4
-                                Label { text: modelData.label; font.pixelSize: 10; color: palette.mid }
+                                Label { text: modelData.label; font.pixelSize: 10; color: root.dimText }
                                 Label { text: modelData.value; font.pixelSize: 11; elide: Text.ElideRight; width: parent.width }
                             }
                         }

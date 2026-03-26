@@ -290,7 +290,7 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     topPadding: 40
                     text: "No apps found in this category."
-                    color: palette.mid
+                    color: root.dimText
                     font.pixelSize: 14
                     visible: !loading && categoryApps.length === 0 && selectedCategory !== ""
                 }
@@ -299,7 +299,7 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     topPadding: 60
                     text: "Select a category from the sidebar to browse apps."
-                    color: palette.mid
+                    color: root.dimText
                     font.pixelSize: 14
                     visible: !loading && selectedCategory === ""
                 }
@@ -329,6 +329,7 @@ Item {
 
                                 AppIcon {
                                     iconPath: modelData.icon_path || ""
+                                    iconUrl: modelData.icon_url || ""
                                     iconName: modelData.name || modelData.id || "?"
                                     size: 56
                                     anchors.horizontalCenter: parent.horizontalCenter

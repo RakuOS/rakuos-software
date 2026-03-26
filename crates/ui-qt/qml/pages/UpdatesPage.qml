@@ -179,7 +179,7 @@ Item {
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: "Press \"Check for Updates\" to get started"
-                    color: palette.mid
+                    color: root.dimText
                     font.pixelSize: 14
                 }
             }
@@ -200,13 +200,13 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: "Your system is up to date"
                     font.pixelSize: 16
-                    color: palette.mid
+                    color: root.dimText
                 }
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: "Your system and all apps are up to date."
                     font.pixelSize: 12
-                    color: palette.mid
+                    color: root.dimText
                 }
             }
 
@@ -250,7 +250,7 @@ Item {
                                 }
                                 Label {
                                     text: "1 update"
-                                    color: palette.mid
+                                    color: root.dimText
                                     font.pixelSize: 12
                                 }
                             }
@@ -282,7 +282,7 @@ Item {
                                             }
                                             return "Refresh of " + (info.current_version || "current");
                                         }
-                                        color: palette.mid
+                                        color: root.dimText
                                         font.pixelSize: 11
                                     }
                                 }
@@ -420,7 +420,7 @@ Item {
 
                 Label {
                     text: secRoot.packages.length + " update" + (secRoot.packages.length !== 1 ? "s" : "")
-                    color: palette.mid
+                    color: root.dimText
                     font.pixelSize: 12
                 }
 
@@ -454,6 +454,7 @@ Item {
 
                             AppIcon {
                                 iconPath: modelData.icon_path || ""
+                                iconUrl: modelData.icon_url || ""
                                 iconName: modelData.name || modelData.id || "?"
                                 size: 32
                             }
@@ -481,7 +482,7 @@ Item {
                                             return "";
                                         }
                                         font.pixelSize: 11
-                                        color: palette.mid
+                                        color: root.dimText
                                         visible: text !== ""
                                     }
                                     Rectangle {
