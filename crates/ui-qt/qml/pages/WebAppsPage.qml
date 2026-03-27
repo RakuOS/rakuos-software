@@ -139,8 +139,9 @@ Item {
                                 AppIcon {
                                     anchors.horizontalCenter: parent.horizontalCenter
                                     iconPath: !webAppsPage.isUrl(modelData.icon_path) ? (modelData.icon_path || "") : ""
-                                    iconUrl:   webAppsPage.isUrl(modelData.icon_path) ? modelData.icon_path : ""
-                                    iconName:  modelData.name || modelData.id || "?"
+                                    iconUrl:  webAppsPage.isUrl(modelData.icon_path) ? modelData.icon_path
+                                              : (webAppsPage.isUrl(modelData.icon_url) ? modelData.icon_url : "")
+                                    iconName: modelData.name || modelData.id || "?"
                                     size: 56
                                 }
 

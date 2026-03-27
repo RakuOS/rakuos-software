@@ -254,6 +254,115 @@ pub struct SoftwareBackend {
 
     // ── AppImage settings ─────────────────────────────────────────────────────
 
+    // ── Local file install ────────────────────────────────────────────────────
+
+    /// Store the startup file path (set from argv in main.rs before QML loads).
+    startupFilePath: qt_property!(QString; NOTIFY startupFilePathChanged),
+    startupFilePathChanged: qt_signal!(),
+
+    /// Read the startup file path from the temp flag written by main.rs.
+    /// QML calls this once at Component.onCompleted; clears the flag after reading.
+    readStartupFilePath: qt_method!(fn readStartupFilePath(&mut self) -> QString {
+        let flag = std::env::temp_dir().join("rakuos-software-open-file");
+        if let Ok(path) = std::fs::read_to_string(&flag) {
+            let _ = std::fs::remove_file(&flag);
+            let path = path.trim().to_string();
+            if !path.is_empty() {
+                self.startupFilePath = path.clone().into();
+                self.startupFilePathChanged();
+                return path.into();
+            }
+        }
+        "".into()
+    }),
+
+    /// Determine file kind from extension.
+    fileKind: qt_method!(fn fileKind(&mut self, path: QString) -> QString {
+        let p = path.to_string().to_lowercase();
+        if p.ends_with(".rpm")        { return "rpm".into(); }
+        if p.ends_with(".flatpak")    { return "flatpak".into(); }
+        if p.ends_with(".flatpakref") { return "flatpakref".into(); }
+        if p.ends_with(".appimage")   { return "appimage".into(); }
+        "unknown".into()
+    }),
+
+    /// Get metadata for a local file. Returns JSON.
+    getLocalFileInfo: qt_method!(fn getLocalFileInfo(&mut self, path: QString, kind: QString) -> QString {
+        let path = path.to_string();
+        let kind = kind.to_string();
+        let info = match kind.as_str() {
+            "rpm"        => rakuos_packages::get_local_rpm_info(&path),
+            "flatpak"    => rakuos_flatpak::get_local_flatpak_info(&path),
+            "flatpakref" => rakuos_flatpak::get_flatpakref_info(&path),
+            "appimage"   => rakuos_appimages::get_appimage_info_for_display(&path),
+            _            => serde_json::json!({"error": "Unknown file type"}),
+        };
+        info.to_string().into()
+    }),
+
+    /// Install a local file. Uses start_op pattern; poll opRunning/opResult.
+    installLocalFile: qt_method!(fn installLocalFile(&mut self, path: QString, kind: QString, action: QString, pkg_name: QString) {
+        let path     = path.to_string();
+        let kind     = kind.to_string();
+        let action   = action.to_string();
+        let pkg_name = pkg_name.to_string();
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), format!("Installing {}...\n", path));
+            let ok = match kind.as_str() {
+                "rpm" => {
+                    let mut exit_code = 1i32;
+                    let iter: Box<dyn Iterator<Item = String> + Send> = if action == "reinstall" {
+                        Box::new(rakuos_packages::reinstall_local_rpm_stream(&pkg_name, &path))
+                    } else {
+                        Box::new(rakuos_packages::install_local_rpm_stream(&path))
+                    };
+                    for line in iter {
+                        if let Some(code) = line.strip_prefix("__done__") {
+                            exit_code = code.trim().parse().unwrap_or(1);
+                        } else if !line.is_empty() {
+                            append_log(&line);
+                        }
+                    }
+                    exit_code == 0
+                }
+                "flatpak" => {
+                    let mut exit_code = 1i32;
+                    for line in rakuos_flatpak::install_local_bundle_stream(&path) {
+                        if let Some(code) = line.strip_prefix("__done__") {
+                            exit_code = code.trim().parse().unwrap_or(1);
+                        } else if !line.is_empty() {
+                            append_log(&line);
+                        }
+                    }
+                    exit_code == 0
+                }
+                "flatpakref" => {
+                    let mut exit_code = 1i32;
+                    for line in rakuos_flatpak::install_flatpakref_stream(&path) {
+                        if let Some(code) = line.strip_prefix("__done__") {
+                            exit_code = code.trim().parse().unwrap_or(1);
+                        } else if !line.is_empty() {
+                            append_log(&line);
+                        }
+                    }
+                    exit_code == 0
+                }
+                "appimage" => {
+                    let (ok, msg, _) = rakuos_appimages::install_appimage(&path);
+                    append_log(&msg);
+                    ok
+                }
+                _ => { append_log("Unknown file type"); false }
+            };
+            shared.result.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    // ── AppImage settings ─────────────────────────────────────────────────────
+
     saveAppImageSettings: qt_method!(fn saveAppImageSettings(&mut self, id: QString, update_source: QString, update_url: QString, update_pattern: QString) -> QString {
         let (ok, msg) = rakuos_appimages::save_settings(
             &id.to_string(),

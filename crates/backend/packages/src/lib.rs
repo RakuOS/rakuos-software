@@ -692,6 +692,93 @@ pub fn remove_stream(package_name: &str) -> impl Iterator<Item = String> + '_ {
     run_rakuos_stream(&["remove", package_name])
 }
 
+/// Extract metadata from a local .rpm file using `rpm --queryformat -qp`.
+/// Returns a JSON Value compatible with the detail page.
+/// Includes `install_action`: "install" | "reinstall" | "upgrade".
+pub fn get_local_rpm_info(path: &str) -> serde_json::Value {
+    let fmt = "Name: %{NAME}\nVersion: %{VERSION}-%{RELEASE}\nSummary: %{SUMMARY}\nDescription: %{DESCRIPTION}\nURL: %{URL}\nLicense: %{LICENSE}\nSize: %{SIZE}\nArch: %{ARCH}";
+    let mut data = std::collections::HashMap::new();
+    if let Ok(out) = Command::new("rpm")
+        .args(["--queryformat", fmt, "-qp", path])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some((k, v)) = line.split_once(": ") {
+                data.insert(k.trim().to_lowercase(), v.trim().to_string());
+            }
+        }
+    }
+    let stem = std::path::Path::new(path)
+        .file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    let name    = data.get("name").cloned().unwrap_or_else(|| stem.clone());
+    let version = data.get("version").cloned().unwrap_or_default();
+    let summary = data.get("summary").cloned().unwrap_or_default();
+    let desc    = data.get("description").cloned().unwrap_or_default();
+    let url     = data.get("url").cloned().filter(|u| u != "(none)").unwrap_or_default();
+    let size: i64 = data.get("size").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let already_installed = is_installed(&name);
+
+    // Determine installed version and what action is appropriate
+    let installed_version = if already_installed {
+        Command::new("rpm")
+            .args(["-q", "--queryformat", "%{VERSION}-%{RELEASE}", &name])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let install_action = if !already_installed {
+        "install"
+    } else if version == installed_version {
+        "reinstall"
+    } else {
+        "upgrade"
+    };
+
+    serde_json::json!({
+        "id":                name,
+        "name":              name,
+        "version":           version,
+        "installed_version": installed_version,
+        "install_action":    install_action,
+        "summary":           summary,
+        "description":       desc,
+        "url":               url,
+        "size":              size,
+        "license":           data.get("license").cloned().unwrap_or_default(),
+        "arch":              data.get("arch").cloned().unwrap_or_default(),
+        "source":            "native",
+        "installed":         already_installed,
+        "local_rpm":         path,
+    })
+}
+
+/// Install a local .rpm file via `rakuos-install` (adds to packages.list).
+/// Streams output lines; last line is "__done__<code>".
+pub fn install_local_rpm_stream(path: &str) -> impl Iterator<Item = String> {
+    run_rakuos_stream(&["install", path])
+}
+
+/// Remove (from packages.list) then re-install a local .rpm.
+/// Used for reinstall (same version already installed).
+/// Streams output lines; last line is "__done__<code>" from the install step.
+pub fn reinstall_local_rpm_stream(pkg_name: &str, path: &str) -> impl Iterator<Item = String> {
+    let mut lines: Vec<String> = vec!["[Removing previous version...]".to_string()];
+    for line in remove_stream(pkg_name) {
+        if !line.starts_with("__done__") {
+            lines.push(line);
+        }
+    }
+    lines.push("[Installing new version...]".to_string());
+    for line in install_local_rpm_stream(path) {
+        lines.push(line);
+    }
+    lines.into_iter()
+}
+
 /// Check if a package name is installed via rpm -q.
 pub fn is_installed(package_name: &str) -> bool {
     Command::new("rpm")

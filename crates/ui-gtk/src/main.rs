@@ -3,13 +3,14 @@
 mod pages;
 
 use gtk4::prelude::*;
-use gtk4::{glib, Box as GBox, Orientation};
+use gtk4::{gio, glib, Align, Box as GBox, Label, Orientation, Spinner, Stack};
 use libadwaita::prelude::*;
 use libadwaita::{
     Application, ApplicationWindow, HeaderBar, ToastOverlay, ViewStack,
     ViewSwitcher, ViewSwitcherPolicy,
 };
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,12 +71,43 @@ fn main() -> glib::ExitCode {
     write_pid_file();
     ensure_daemon_running();
 
-    let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(move |app| build_ui(app, start_hidden));
-    let exit = app.run();
+    let app = Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
 
+    // Normal launch (no file argument) → just build the UI.
+    app.connect_activate(move |app| {
+        if app.windows().is_empty() {
+            build_ui(app, start_hidden);
+        }
+    });
+
+    // Launched with a file argument (first launch OR second instance forwarded
+    // by GIO single-instance to the primary via D-Bus).
+    app.connect_open(move |app, files, _| {
+        // Write the flag file first so build_ui can read it immediately.
+        if let Some(path) = files.first().and_then(|f| f.path()) {
+            let _ = std::fs::write(open_file_flag_path(), path.to_string_lossy().as_ref());
+        }
+        if app.windows().is_empty() {
+            // First launch with a file — build window (it reads flag at the end).
+            build_ui(app, false);
+        } else {
+            // Window already exists — polling timer picks up the flag within 500 ms.
+            if let Some(win) = app.windows().first() {
+                win.present();
+            }
+        }
+    });
+
+    let exit = app.run();
     let _ = std::fs::remove_file(pid_file_path());
     exit
+}
+
+fn open_file_flag_path() -> PathBuf {
+    std::env::temp_dir().join("rakuos-software-open-file")
 }
 
 fn build_ui(app: &Application, start_hidden: bool) {
@@ -272,20 +304,97 @@ fn build_ui(app: &Application, start_hidden: bool) {
     window.add_action(&action_settings);
     window.add_action(&action_about);
 
-    window.set_content(Some(&nav_view));
+    // ── Root stack: loading splash → main content ─────────────────────────────
+    let root_stack = Stack::new();
+    root_stack.set_vexpand(true);
+    root_stack.set_hexpand(true);
 
-    // ── Tray show-flag polling ────────────────────────────────────────────
-    // The daemon writes /tmp/rakuos-software-show when the user clicks the
-    // tray icon while the UI is already running. We poll and raise the window.
+    // Loading splash
+    let loading_box = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(20)
+        .halign(Align::Center)
+        .valign(Align::Center)
+        .build();
+
+    let logo = gtk4::Image::builder()
+        .icon_name("rakuos-logo")
+        .pixel_size(96)
+        .build();
+    loading_box.append(&logo);
+
+    let load_spinner = Spinner::builder()
+        .spinning(true)
+        .halign(Align::Center)
+        .width_request(36)
+        .height_request(36)
+        .build();
+    loading_box.append(&load_spinner);
+
+    let load_label = Label::new(Some("Loading software catalog…"));
+    load_label.add_css_class("dim-label");
+    loading_box.append(&load_label);
+
+    root_stack.add_named(&loading_box, Some("loading"));
+    root_stack.add_named(&nav_view, Some("main"));
+    root_stack.set_visible_child_name("loading");
+
+    window.set_content(Some(&root_stack));
+
+    // Warm appstream cache in background; switch to main content when ready
+    let cache_ready = Arc::new(AtomicBool::new(false));
+    let cache_ready_bg = Arc::clone(&cache_ready);
+    std::thread::spawn(move || {
+        let _ = rakuos_appstream::get_appstream();
+        cache_ready_bg.store(true, Ordering::Release);
+    });
+
+    let root_stack_c = root_stack.clone();
+    glib::timeout_add_local(Duration::from_millis(200), move || {
+        if cache_ready.load(Ordering::Acquire) {
+            root_stack_c.set_visible_child_name("main");
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+
+    // ── Tray show-flag + open-file polling ───────────────────────────────────
     let window_raise = window.clone();
+    let nav_open = Arc::clone(&nav_arc);
     glib::timeout_add_local(Duration::from_millis(500), move || {
+        // Tray raise
         let flag = show_flag_path();
         if flag.exists() {
             let _ = std::fs::remove_file(&flag);
             window_raise.present();
         }
+        // Open-file request from connect_open (single-instance second launch)
+        let open_flag = open_file_flag_path();
+        if open_flag.exists() {
+            if let Ok(path) = std::fs::read_to_string(&open_flag) {
+                let _ = std::fs::remove_file(&open_flag);
+                let path = path.trim().to_string();
+                if !path.is_empty() {
+                    pages::local_install::push_local_install(&nav_open, &path);
+                    window_raise.present();
+                }
+            }
+        }
         glib::ControlFlow::Continue
     });
+
+    // Open startup file immediately if one was written to the flag file
+    // (written by main() before app.run() so it's always present on first launch).
+    let open_flag = open_file_flag_path();
+    if open_flag.exists() {
+        if let Ok(path) = std::fs::read_to_string(&open_flag) {
+            let _ = std::fs::remove_file(&open_flag);
+            let path = path.trim().to_string();
+            if !path.is_empty() {
+                pages::local_install::push_local_install(&nav_arc, &path);
+            }
+        }
+    }
 
     // Close → hide (keep running so the tray daemon can raise us again)
     window.connect_close_request(|win| {

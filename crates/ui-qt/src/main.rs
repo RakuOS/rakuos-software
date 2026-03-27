@@ -62,6 +62,21 @@ fn main() {
         c"SoftwareBackend",
     );
 
+    // Collect any file path passed via MIME type association (%f in .desktop)
+    // Skip "--tray" and other flag arguments; take the first non-flag arg.
+    let startup_file: Option<String> = std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with('-'));
+
+    // Write the startup file path to a temp file so QML can read it at startup
+    // (QmlEngine doesn't support passing context properties easily before load).
+    let startup_flag = std::env::temp_dir().join("rakuos-software-open-file");
+    if let Some(ref path) = startup_file {
+        let _ = std::fs::write(&startup_flag, path);
+    } else {
+        let _ = std::fs::remove_file(&startup_flag);
+    }
+
     let mut engine = QmlEngine::new();
     unsafe { set_qt_app_properties(); }
 

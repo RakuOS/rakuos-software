@@ -8,4 +8,5 @@ pub mod detail;
 pub mod settings;
 pub mod system;
 
+pub mod local_install;
 pub mod icon_helper;

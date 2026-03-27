@@ -37,12 +37,25 @@ ApplicationWindow {
         }
     }
 
+    // ── Local file install ────────────────────────────────────────────────────
+    function showLocalFile(path) {
+        var kind = backend.fileKind(path);
+        if (kind === "unknown") return;
+        localFilePage.activate(path, kind);
+        backend.navigate(10);
+    }
+
     // ── Startup init ──────────────────────────────────────────────────────────
     Component.onCompleted: {
         // Pre-warm AppStream cache so first search/browse is instant
         backend.warmCache();
         // Load any cached update count from the last daemon check for badge display
         backend.loadDaemonUpdateCache();
+        // If launched via MIME type with a file argument, open it
+        var startupPath = backend.readStartupFilePath();
+        if (startupPath !== "") {
+            Qt.callLater(function() { root.showLocalFile(startupPath); });
+        }
     }
 
     // ── Show-request poll (tray "Open" while window is hidden) ────────────────
@@ -263,7 +276,6 @@ ApplicationWindow {
                                 { label: "🏠  Home",       page: 0 },
                                 { label: "📦  Installed",  page: 3 },
                                 { label: "🌐  Web Apps",   page: 8 },
-                                { label: "📁  AppImages",  page: 9 },
                                 { label: "🔄  Updates",    page: 4 },
                                 { label: "⚙️   System",    page: 5 },
                                 { label: "🛠  Settings",   page: 6 },
@@ -506,8 +518,14 @@ ApplicationWindow {
                 // Page 8: Web Apps catalog
                 WebAppsPage { id: webAppsPage }
 
-                // Page 9: AppImages
-                AppImagesPage { id: appImagesPage }
+                // Page 9: (reserved — AppImages removed, managed via Installed page)
+                Item {}
+
+                // Page 10: Local file install
+                LocalFilePage {
+                    id: localFilePage
+                    onBackRequested: backend.navigate(0)
+                }
             }
         }
 
@@ -521,7 +539,6 @@ ApplicationWindow {
                     case 5: systemPageItem.activate(); break;
                     case 7: detailPageItem.loadApp(root.detailApp); break;
                     case 8: webAppsPage.activate(); break;
-                    case 9: appImagesPage.activate(); break;
                 }
             }
         }

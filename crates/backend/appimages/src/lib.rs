@@ -197,9 +197,10 @@ pub fn extract_appimage_info(path: &str) -> AppImageInfo {
         let _ = std::fs::set_permissions(path, perms);
     }
 
-    // Run --appimage-extract
-    let result = Command::new(path)
-        .arg("--appimage-extract")
+    // Run --appimage-extract with a 30-second timeout to avoid hanging on
+    // AppImages that require FUSE or don't support extraction mode.
+    let result = Command::new("timeout")
+        .args(["30", &path.to_string_lossy(), "--appimage-extract"])
         .current_dir(&extract_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
