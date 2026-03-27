@@ -73,13 +73,13 @@ cargo build --locked --release --bin rakuos-software-tray
 # ─── Install ─────────────────────────────────────────────────────────────────
 %install
 # Frontend binaries
-install -Dm755 target/rpm/rakuos-software-gtk \
+install -Dm755 target/release/rakuos-software-gtk \
     %{buildroot}%{_libexecdir}/rakuos/software/rakuos-software-gtk
-install -Dm755 target/rpm/rakuos-software-qt \
+install -Dm755 target/release/rakuos-software-qt \
     %{buildroot}%{_libexecdir}/rakuos/software/rakuos-software-qt
 
 # Tray daemon binary
-install -Dm755 target/rpm/rakuos-software-tray \
+install -Dm755 target/release/rakuos-software-tray \
     %{buildroot}%{_libexecdir}/rakuos/software/rakuos-software-tray
 
 # Wrapper scripts (from resources/ — used by both desktop files)
