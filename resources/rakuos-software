@@ -8,6 +8,8 @@ if [ -x "$LIBEXEC/rakuos-software-gtk" ]; then
     exec "$LIBEXEC/rakuos-software-gtk" "$@"
 elif [ -x "$LIBEXEC/rakuos-software-qt" ]; then
     exec "$LIBEXEC/rakuos-software-qt" "$@"
+elif [ -x "$LIBEXEC/rakuos-software" ]; then
+    exec "$LIBEXEC/rakuos-software" "$@"
 else
     echo "rakuos-software: no frontend installed (expected gtk or qt in $LIBEXEC)" >&2
     exit 1
