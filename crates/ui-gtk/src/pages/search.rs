@@ -6,7 +6,8 @@ use gtk4::{
 };
 use libadwaita::prelude::*;
 use libadwaita::NavigationView;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use rakuos_packages::NativeApp;
 use rakuos_webapps::WebApp;
@@ -87,38 +88,45 @@ pub fn run_search(search_widget: &Widget, query: String) {
     }
 
     let q = query.clone();
-    let list_c = list_box.clone();
-    let empty_c = empty.clone();
-    let q2 = query.clone();
+    let (tx, rx) = mpsc::channel::<(Vec<NativeApp>, Vec<WebApp>)>();
 
     std::thread::spawn(move || {
         let packages = rakuos_packages::search(&q).unwrap_or_default();
         let webapps = rakuos_webapps::search(&q);
+        let _ = tx.send((packages, webapps));
+    });
 
-        glib::idle_add_once(move || {
-            while let Some(child) = list_c.first_child() {
-                list_c.remove(&child);
+    let list_c = list_box.clone();
+    let empty_c = empty.clone();
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok((packages, webapps)) => {
+                while let Some(child) = list_c.first_child() {
+                    list_c.remove(&child);
+                }
+                let total = packages.len() + webapps.len();
+                if total == 0 {
+                    list_c.set_visible(false);
+                    if let Some(e) = &empty_c {
+                        e.set_title("No Results");
+                        e.set_description(Some(&format!("No apps found for \u{201c}{}\u{201d}", query)));
+                        e.set_visible(true);
+                    }
+                } else {
+                    for app in packages.iter().take(30) {
+                        let row = build_result_row_native(app);
+                        list_c.append(&row);
+                    }
+                    for app in webapps.iter().take(10) {
+                        let row = build_result_row_webapp(app);
+                        list_c.append(&row);
+                    }
+                }
+                glib::ControlFlow::Break
             }
-
-            let total = packages.len() + webapps.len();
-            if total == 0 {
-                list_c.set_visible(false);
-                if let Some(e) = &empty_c {
-                    e.set_title("No Results");
-                    e.set_description(Some(&format!("No apps found for \u{201c}{}\u{201d}", q2)));
-                    e.set_visible(true);
-                }
-            } else {
-                for app in packages.iter().take(30) {
-                    let row = build_result_row_native(app);
-                    list_c.append(&row);
-                }
-                for app in webapps.iter().take(10) {
-                    let row = build_result_row_webapp(app);
-                    list_c.append(&row);
-                }
-            }
-        });
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => glib::ControlFlow::Break,
+        }
     });
 }
 

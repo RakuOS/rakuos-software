@@ -6,7 +6,8 @@ use gtk4::{
 };
 use libadwaita::prelude::*;
 use libadwaita::NavigationView;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use rakuos_flatpak::FlatpakApp;
 use rakuos_updates::UpdateInfo;
@@ -119,119 +120,143 @@ fn load_updates(
     update_all_btn: Button,
     restart_btn: Button,
 ) {
+    type UpdateData = (UpdateInfo, Vec<FlatpakApp>);
+    let (tx, rx) = mpsc::channel::<UpdateData>();
+
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let system = rt.block_on(rakuos_updates::check_for_update());
         let flatpaks = rakuos_flatpak::get_updates();
+        let _ = tx.send((system, flatpaks));
+    });
 
-        let has_system = system.available;
-        let has_flatpaks = !flatpaks.is_empty();
-        let has_any = has_system || has_flatpaks;
+    glib::timeout_add_local(Duration::from_millis(80), move || {
+        match rx.try_recv() {
+            Ok((system, flatpaks)) => {
+                spinner.set_spinning(false);
+                spinner.set_visible(false);
 
-        let sys_repo = system.repo_url.clone();
-        let sys_tag = system.new_tag.clone();
-        let sys_cur = system.current_version.clone();
-        let sys_new = system.new_version.clone();
-        let sys_avail = system.available;
+                let has_system = system.available;
+                let has_flatpaks = !flatpaks.is_empty();
+                let has_any = has_system || has_flatpaks;
 
-        glib::idle_add_once(move || {
-            spinner.set_spinning(false);
-            spinner.set_visible(false);
-
-            if !has_any {
-                let sp = libadwaita::StatusPage::builder()
-                    .title("Up to Date")
-                    .description("Your system and apps are up to date")
-                    .icon_name("emblem-default-symbolic")
-                    .build();
-                content.append(&sp);
-            } else {
-                update_all_btn.set_sensitive(true);
-
-                if has_system {
-                    restart_btn.set_visible(true);
-                    restart_btn.set_sensitive(true);
-
-                    let section_lbl = Label::builder()
-                        .label("System Update (Requires Restart)")
-                        .halign(Align::Start)
-                        .css_classes(vec!["title-3".to_string()])
+                if !has_any {
+                    let sp = libadwaita::StatusPage::builder()
+                        .title("Up to Date")
+                        .description("Your system and apps are up to date")
+                        .icon_name("emblem-default-symbolic")
                         .build();
-                    content.append(&section_lbl);
+                    content.append(&sp);
+                } else {
+                    update_all_btn.set_sensitive(true);
 
-                    let row = build_system_update_row(&sys_cur, &sys_new);
-                    content.append(&row);
+                    if has_system {
+                        restart_btn.set_visible(true);
+                        restart_btn.set_sensitive(true);
 
-                    let note = Label::builder()
-                        .label("A restart is required to apply the system update.")
-                        .halign(Align::Start)
-                        .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
-                        .build();
-                    content.append(&note);
+                        let section_lbl = Label::builder()
+                            .label("System Update (Requires Restart)")
+                            .halign(Align::Start)
+                            .css_classes(vec!["title-3".to_string()])
+                            .build();
+                        content.append(&section_lbl);
+
+                        let row = build_system_update_row(&system.current_version, &system.new_version);
+                        content.append(&row);
+
+                        let note = Label::builder()
+                            .label("A restart is required to apply the system update.")
+                            .halign(Align::Start)
+                            .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+                            .build();
+                        content.append(&note);
+
+                        if has_flatpaks {
+                            content.append(&gtk4::Separator::new(Orientation::Horizontal));
+                        }
+                    }
 
                     if has_flatpaks {
-                        content.append(&gtk4::Separator::new(Orientation::Horizontal));
-                    }
-                }
+                        let fp_lbl = Label::builder()
+                            .label("Flatpak Updates")
+                            .halign(Align::Start)
+                            .css_classes(vec!["title-3".to_string()])
+                            .build();
+                        content.append(&fp_lbl);
 
-                if has_flatpaks {
-                    let fp_lbl = Label::builder()
-                        .label("Flatpak Updates")
-                        .halign(Align::Start)
-                        .css_classes(vec!["title-3".to_string()])
-                        .build();
-                    content.append(&fp_lbl);
-
-                    let list = gtk4::ListBox::builder()
-                        .selection_mode(gtk4::SelectionMode::None)
-                        .css_classes(vec!["boxed-list".to_string()])
-                        .build();
-
-                    for fp in &flatpaks {
-                        let row = build_flatpak_update_row(fp);
-                        list.append(&row);
-                    }
-                    content.append(&list);
-                }
-
-                // Wire Update All
-                let repo = sys_repo.clone();
-                let tag = sys_tag.clone();
-                let do_sys = sys_avail;
-                update_all_btn.connect_clicked(move |btn| {
-                    btn.set_sensitive(false);
-                    btn.set_label("Updating…");
-                    let repo_c = repo.clone();
-                    let tag_c = tag.clone();
-                    let btn_c = btn.clone();
-                    std::thread::spawn(move || {
-                        if do_sys {
-                            let _: Vec<_> = rakuos_updates::upgrade_image_stream("switch", &repo_c, &tag_c).collect();
+                        let list = gtk4::ListBox::builder()
+                            .selection_mode(gtk4::SelectionMode::None)
+                            .css_classes(vec!["boxed-list".to_string()])
+                            .build();
+                        for fp in &flatpaks {
+                            let row = build_flatpak_update_row(fp);
+                            list.append(&row);
                         }
-                        let _: Vec<_> = rakuos_flatpak::update_stream().collect();
-                        glib::idle_add_once(move || {
-                            btn_c.set_label("Update All");
-                            btn_c.set_sensitive(true);
-                        });
-                    });
-                });
+                        content.append(&list);
+                    }
 
-                // Wire Restart & Update
-                let repo2 = sys_repo.clone();
-                let tag2 = sys_tag.clone();
-                restart_btn.connect_clicked(move |btn| {
-                    btn.set_sensitive(false);
-                    let r = repo2.clone();
-                    let t = tag2.clone();
-                    std::thread::spawn(move || {
-                        let _: Vec<_> = rakuos_updates::upgrade_image_stream("switch", &r, &t).collect();
-                        glib::idle_add_once(|| {
-                            let _ = rakuos_updates::schedule_reboot();
+                    // Wire Update All
+                    let repo = system.repo_url.clone();
+                    let tag = system.new_tag.clone();
+                    let do_sys = system.available;
+                    update_all_btn.connect_clicked(move |btn| {
+                        btn.set_sensitive(false);
+                        btn.set_label("Updating…");
+                        let repo_c = repo.clone();
+                        let tag_c = tag.clone();
+                        let (tx2, rx2) = mpsc::channel::<()>();
+                        std::thread::spawn(move || {
+                            if do_sys {
+                                let _: Vec<_> = rakuos_updates::upgrade_image_stream("switch", &repo_c, &tag_c).collect();
+                            }
+                            let _: Vec<_> = rakuos_flatpak::update_stream().collect();
+                            let _ = tx2.send(());
+                        });
+                        let btn_c = btn.clone();
+                        glib::timeout_add_local(Duration::from_millis(50), move || {
+                            match rx2.try_recv() {
+                                Ok(_) => {
+                                    btn_c.set_label("Update All");
+                                    btn_c.set_sensitive(true);
+                                    glib::ControlFlow::Break
+                                }
+                                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                                Err(_) => glib::ControlFlow::Break,
+                            }
                         });
                     });
-                });
+
+                    // Wire Restart & Update
+                    let repo2 = system.repo_url.clone();
+                    let tag2 = system.new_tag.clone();
+                    restart_btn.connect_clicked(move |btn| {
+                        btn.set_sensitive(false);
+                        let r = repo2.clone();
+                        let t = tag2.clone();
+                        let (tx3, rx3) = mpsc::channel::<()>();
+                        std::thread::spawn(move || {
+                            let _: Vec<_> = rakuos_updates::upgrade_image_stream("switch", &r, &t).collect();
+                            let _ = tx3.send(());
+                        });
+                        let btn_c = btn.clone();
+                        glib::timeout_add_local(Duration::from_millis(50), move || {
+                            match rx3.try_recv() {
+                                Ok(_) => {
+                                    let _ = rakuos_updates::schedule_reboot();
+                                    glib::ControlFlow::Break
+                                }
+                                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                                Err(_) => glib::ControlFlow::Break,
+                            }
+                        });
+                        drop(btn_c);
+                    });
+                }
+                glib::ControlFlow::Break
             }
-        });
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => glib::ControlFlow::Break,
+        }
     });
 }
 

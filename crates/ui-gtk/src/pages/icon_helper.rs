@@ -5,6 +5,8 @@ use gtk4::{gdk_pixbuf, glib, Image, Widget};
 use libadwaita::prelude::*;
 use libadwaita::Avatar;
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Load an app icon as a GTK Widget.
 /// Priority: local file → URL-based async load → Avatar with initials.
@@ -27,13 +29,18 @@ pub fn load_app_icon(icon_path: &str, icon_url: &str, size: i32, name: &str) -> 
             .build();
         img.add_css_class("app-icon");
 
-        let img_c = img.clone();
         let url = icon_url.to_string();
         let size_px = size;
+        let (tx, rx) = mpsc::channel::<Option<Vec<u8>>>();
 
         std::thread::spawn(move || {
-            if let Some(bytes) = fetch_bytes_sync(&url) {
-                glib::idle_add_once(move || {
+            let _ = tx.send(fetch_bytes_sync(&url));
+        });
+
+        let img_c = img.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(Some(bytes)) => {
                     let loader = gdk_pixbuf::PixbufLoader::new();
                     if loader.write(&bytes).is_ok() && loader.close().is_ok() {
                         if let Some(pb) = loader.pixbuf() {
@@ -46,7 +53,11 @@ pub fn load_app_icon(icon_path: &str, icon_url: &str, size: i32, name: &str) -> 
                             }
                         }
                     }
-                });
+                    glib::ControlFlow::Break
+                }
+                Ok(None) => glib::ControlFlow::Break,
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
             }
         });
 

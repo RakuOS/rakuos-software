@@ -3,24 +3,82 @@
 mod pages;
 
 use gtk4::prelude::*;
-use gtk4::{glib, Align, Box as GBox, Orientation, Separator};
+use gtk4::{glib, Box as GBox, Orientation};
 use libadwaita::prelude::*;
 use libadwaita::{
     Application, ApplicationWindow, HeaderBar, ToastOverlay, ViewStack,
     ViewSwitcher, ViewSwitcherPolicy,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 const APP_ID: &str = "org.rakuos.Software";
 
-fn main() -> glib::ExitCode {
-    env_logger::init();
-    let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build_ui);
-    app.run()
+// ── Daemon / PID helpers (mirrors rakuos-software-qt) ─────────────────────────
+
+fn pid_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".cache/rakuos/software-ui.pid")
 }
 
-fn build_ui(app: &Application) {
+fn show_flag_path() -> PathBuf {
+    std::env::temp_dir().join("rakuos-software-show")
+}
+
+fn write_pid_file() {
+    let path = pid_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, std::process::id().to_string());
+}
+
+fn daemon_binary() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .join("rakuos-software-tray");
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    PathBuf::from("rakuos-software-tray")
+}
+
+fn ensure_daemon_running() {
+    let running = std::process::Command::new("pgrep")
+        .args(["-f", "rakuos-software-tray"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !running {
+        log::info!("Starting rakuos-software-tray daemon...");
+        let _ = std::process::Command::new(daemon_binary()).spawn();
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+fn main() -> glib::ExitCode {
+    env_logger::init();
+
+    // --tray: start hidden so the daemon can raise us on demand
+    let start_hidden = std::env::args().any(|a| a == "--tray");
+
+    write_pid_file();
+    ensure_daemon_running();
+
+    let app = Application::builder().application_id(APP_ID).build();
+    app.connect_activate(move |app| build_ui(app, start_hidden));
+    let exit = app.run();
+
+    let _ = std::fs::remove_file(pid_file_path());
+    exit
+}
+
+fn build_ui(app: &Application, start_hidden: bool) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("RakuOS Software")
@@ -74,7 +132,7 @@ fn build_ui(app: &Application) {
         .show_close_button(true)
         .build();
 
-    // ── Search results page (hidden inside view stack or shown below header)
+    // ── Search results page ───────────────────────────────────────────────
     let search_page_w = pages::search::build(Arc::clone(&nav_arc));
 
     // ── Hamburger menu ────────────────────────────────────────────────────
@@ -124,7 +182,6 @@ fn build_ui(app: &Application) {
     main_box.append(&header);
     main_box.append(&search_bar);
 
-    // Search results overlay: show search_page when search active, else view_stack
     let content_stack = gtk4::Stack::new();
     content_stack.set_vexpand(true);
     content_stack.add_named(&view_stack, Some("main"));
@@ -133,12 +190,8 @@ fn build_ui(app: &Application) {
 
     main_box.append(&content_stack);
 
-    // Connect search entry to search page
-    let cs_clone = content_stack.clone();
-    let search_entry_c = search_entry.clone();
-    let nav_search = Arc::clone(&nav_arc);
-
     // When search mode activates, switch to search results view
+    let cs_clone = content_stack.clone();
     search_bar.connect_search_mode_enabled_notify(move |bar| {
         if bar.is_search_mode() {
             cs_clone.set_visible_child_name("search");
@@ -148,7 +201,6 @@ fn build_ui(app: &Application) {
     });
 
     // Trigger search on entry change
-    let search_entry_c2 = search_entry.clone();
     search_entry.connect_search_changed(move |entry| {
         let query = entry.text().to_string();
         pages::search::run_search(&search_page_w, query);
@@ -169,7 +221,6 @@ fn build_ui(app: &Application) {
     // Track nav stack depth for back button visibility
     let back_btn_c = back_btn.clone();
     nav_view.connect_visible_page_notify(move |nv| {
-        // Show back button when we can navigate back (depth > 1)
         let can_pop = nv.previous_page(nv.visible_page().as_ref().unwrap()).is_some();
         back_btn_c.set_visible(can_pop);
     });
@@ -179,9 +230,12 @@ fn build_ui(app: &Application) {
     let action_system = gtk4::gio::SimpleAction::new("show-system", None);
     action_system.connect_activate(move |_, _| {
         let page_w = pages::system::build();
+        let toolbar = libadwaita::ToolbarView::new();
+        toolbar.add_top_bar(&libadwaita::HeaderBar::new());
+        toolbar.set_content(Some(&page_w));
         let nav_page = libadwaita::NavigationPage::builder()
             .title("System")
-            .child(&page_w)
+            .child(&toolbar)
             .build();
         nav_sys.push(&nav_page);
     });
@@ -190,9 +244,12 @@ fn build_ui(app: &Application) {
     let action_settings = gtk4::gio::SimpleAction::new("show-settings", None);
     action_settings.connect_activate(move |_, _| {
         let page_w = pages::settings::build();
+        let toolbar = libadwaita::ToolbarView::new();
+        toolbar.add_top_bar(&libadwaita::HeaderBar::new());
+        toolbar.set_content(Some(&page_w));
         let nav_page = libadwaita::NavigationPage::builder()
             .title("Settings")
-            .child(&page_w)
+            .child(&toolbar)
             .build();
         nav_set.push(&nav_page);
     });
@@ -202,7 +259,7 @@ fn build_ui(app: &Application) {
     action_about.connect_activate(move |_, _| {
         let dialog = libadwaita::AboutDialog::builder()
             .application_name("RakuOS Software")
-            .application_icon("org.rakuos.Software")
+            .application_icon("rakuos-logo")
             .version("1.0.0")
             .developer_name("RakuOS Project")
             .license_type(gtk4::License::Gpl30)
@@ -216,5 +273,28 @@ fn build_ui(app: &Application) {
     window.add_action(&action_about);
 
     window.set_content(Some(&nav_view));
-    window.present();
+
+    // ── Tray show-flag polling ────────────────────────────────────────────
+    // The daemon writes /tmp/rakuos-software-show when the user clicks the
+    // tray icon while the UI is already running. We poll and raise the window.
+    let window_raise = window.clone();
+    glib::timeout_add_local(Duration::from_millis(500), move || {
+        let flag = show_flag_path();
+        if flag.exists() {
+            let _ = std::fs::remove_file(&flag);
+            window_raise.present();
+        }
+        glib::ControlFlow::Continue
+    });
+
+    // Close → hide (keep running so the tray daemon can raise us again)
+    window.connect_close_request(|win| {
+        win.set_visible(false);
+        glib::Propagation::Stop
+    });
+
+    // Present immediately unless started via --tray (background mode)
+    if !start_hidden {
+        window.present();
+    }
 }

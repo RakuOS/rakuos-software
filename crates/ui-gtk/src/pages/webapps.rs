@@ -6,8 +6,9 @@ use gtk4::{
     SelectionMode, Widget,
 };
 use libadwaita::prelude::*;
-use libadwaita::{NavigationPage, NavigationView};
-use std::sync::Arc;
+use libadwaita::{Carousel, HeaderBar, NavigationPage, NavigationView, ToolbarView};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use rakuos_webapps::WebApp;
 
@@ -61,29 +62,37 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
     main_box.append(&spinner);
 
     let nav_c = Arc::clone(&nav);
+    let (tx, rx) = mpsc::channel::<Vec<WebApp>>();
     std::thread::spawn(move || {
         let apps = rakuos_webapps::get_catalog();
-        glib::idle_add_once(move || {
-            spinner.set_spinning(false);
-            spinner.set_visible(false);
-
-            if apps.is_empty() {
-                let sp = libadwaita::StatusPage::builder()
-                    .title("No Web Apps Available")
-                    .description("No web app catalog found on this system")
-                    .icon_name("web-browser-symbolic")
-                    .build();
-                main_box.append(&sp);
-            } else {
-                for app in &apps {
-                    let card = build_webapp_card(app, Arc::clone(&nav_c));
-                    let child = FlowBoxChild::new();
-                    child.set_child(Some(&card));
-                    child.set_focusable(false);
-                    flow.insert(&child, -1);
+        let _ = tx.send(apps);
+    });
+    glib::timeout_add_local(Duration::from_millis(80), move || {
+        match rx.try_recv() {
+            Ok(apps) => {
+                spinner.set_spinning(false);
+                spinner.set_visible(false);
+                if apps.is_empty() {
+                    let sp = libadwaita::StatusPage::builder()
+                        .title("No Web Apps Available")
+                        .description("No web app catalog found on this system")
+                        .icon_name("web-browser-symbolic")
+                        .build();
+                    main_box.append(&sp);
+                } else {
+                    for app in &apps {
+                        let card = build_webapp_card(app, Arc::clone(&nav_c));
+                        let child = FlowBoxChild::new();
+                        child.set_child(Some(&card));
+                        child.set_focusable(false);
+                        flow.insert(&child, -1);
+                    }
                 }
+                glib::ControlFlow::Break
             }
-        });
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => glib::ControlFlow::Break,
+        }
     });
 
     outer_scroll.upcast()
@@ -140,15 +149,19 @@ fn build_webapp_card(app: &WebApp, nav: Arc<NavigationView>) -> Widget {
     let nav_c = Arc::clone(&nav);
 
     btn.connect_clicked(move |_| {
-        let detail_w = build_webapp_detail(&app_clone);
-        let nav_page = NavigationPage::builder()
-            .title(&app_clone.name)
-            .child(&detail_w)
-            .build();
-        nav_c.push(&nav_page);
+        push_webapp_detail(&nav_c, &app_clone);
     });
 
     btn.upcast()
+}
+
+pub fn push_webapp_detail(nav: &Arc<NavigationView>, app: &WebApp) {
+    let page_w = build_webapp_detail(app);
+    let nav_page = NavigationPage::builder()
+        .title(&app.name)
+        .child(&page_w)
+        .build();
+    nav.push(&nav_page);
 }
 
 fn build_webapp_detail(app: &WebApp) -> Widget {
@@ -218,7 +231,6 @@ fn build_webapp_detail(app: &WebApp) -> Widget {
         .build();
 
     let app_id = app.id.clone();
-    // Use a RefCell-wrapped bool to track install state
     let installed_cell = std::rc::Rc::new(std::cell::Cell::new(is_installed));
     let installed_cell_c = installed_cell.clone();
 
@@ -227,32 +239,41 @@ fn build_webapp_detail(app: &WebApp) -> Widget {
         let pkg = app_id.clone();
         btn.set_sensitive(false);
         btn.set_label(if currently { "Uninstalling…" } else { "Installing…" });
-        let btn_c = btn.clone();
-        let ic = installed_cell_c.clone();
+        let (tx, rx) = mpsc::channel::<bool>();
         std::thread::spawn(move || {
             let (ok, _msg) = if currently {
                 rakuos_webapps::uninstall(&pkg)
             } else {
                 rakuos_webapps::install(&pkg)
             };
-            glib::idle_add_once(move || {
-                btn_c.set_sensitive(true);
-                if ok {
-                    let new_state = !currently;
-                    ic.set(new_state);
-                    if new_state {
-                        btn_c.set_label("Uninstall");
-                        btn_c.remove_css_class("suggested-action");
-                        btn_c.add_css_class("destructive-action");
+            let _ = tx.send(ok);
+        });
+        let btn_c = btn.clone();
+        let ic = installed_cell_c.clone();
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            match rx.try_recv() {
+                Ok(ok) => {
+                    btn_c.set_sensitive(true);
+                    if ok {
+                        let new_state = !currently;
+                        ic.set(new_state);
+                        if new_state {
+                            btn_c.set_label("Uninstall");
+                            btn_c.remove_css_class("suggested-action");
+                            btn_c.add_css_class("destructive-action");
+                        } else {
+                            btn_c.set_label("Install");
+                            btn_c.remove_css_class("destructive-action");
+                            btn_c.add_css_class("suggested-action");
+                        }
                     } else {
-                        btn_c.set_label("Install");
-                        btn_c.remove_css_class("destructive-action");
-                        btn_c.add_css_class("suggested-action");
+                        btn_c.set_label(if currently { "Uninstall" } else { "Install" });
                     }
-                } else {
-                    btn_c.set_label(if currently { "Uninstall" } else { "Install" });
+                    glib::ControlFlow::Break
                 }
-            });
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
         });
     });
 
@@ -270,5 +291,115 @@ fn build_webapp_detail(app: &WebApp) -> Widget {
         main_box.append(&desc);
     }
 
-    scroll.upcast()
+    // Screenshots carousel
+    if !app.screenshots.is_empty() {
+        main_box.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+        let screenshots_lbl = Label::builder()
+            .label("Screenshots")
+            .halign(Align::Start)
+            .css_classes(vec!["title-4".to_string()])
+            .build();
+        main_box.append(&screenshots_lbl);
+
+        let carousel = Carousel::builder()
+            .allow_mouse_drag(true)
+            .allow_scroll_wheel(true)
+            .hexpand(true)
+            .height_request(280)
+            .build();
+
+        let indicator = libadwaita::CarouselIndicatorDots::builder()
+            .carousel(&carousel)
+            .build();
+
+        let ss_overlay = gtk4::Overlay::new();
+        ss_overlay.set_child(Some(&carousel));
+
+        let prev_btn = Button::builder()
+            .icon_name("go-previous-symbolic")
+            .valign(Align::Center).halign(Align::Start).margin_start(8)
+            .css_classes(vec!["circular".to_string(), "osd".to_string()])
+            .build();
+        let next_btn = Button::builder()
+            .icon_name("go-next-symbolic")
+            .valign(Align::Center).halign(Align::End).margin_end(8)
+            .css_classes(vec!["circular".to_string(), "osd".to_string()])
+            .build();
+        ss_overlay.add_overlay(&prev_btn);
+        ss_overlay.add_overlay(&next_btn);
+
+        let sc = carousel.clone();
+        prev_btn.connect_clicked(move |_| {
+            let pos = sc.position().round() as usize;
+            let n = sc.n_pages() as usize;
+            if n > 0 {
+                let t = if pos == 0 { n - 1 } else { pos - 1 };
+                sc.scroll_to(&sc.nth_page(t as u32), true);
+            }
+        });
+        let sc = carousel.clone();
+        next_btn.connect_clicked(move |_| {
+            let pos = sc.position().round() as usize;
+            let n = sc.n_pages() as usize;
+            if n > 0 {
+                sc.scroll_to(&sc.nth_page(((pos + 1) % n) as u32), true);
+            }
+        });
+
+        load_webapp_screenshots(&carousel, &app.screenshots);
+        main_box.append(&ss_overlay);
+        main_box.append(&indicator);
+    }
+
+    // Wrap in ToolbarView so NavigationView injects a back button
+    let toolbar = ToolbarView::new();
+    toolbar.add_top_bar(&HeaderBar::new());
+    toolbar.set_content(Some(&scroll));
+    toolbar.upcast()
+}
+
+fn load_webapp_screenshots(carousel: &Carousel, urls: &[String]) {
+    for url in urls.iter().take(8) {
+        let picture = gtk4::Picture::builder()
+            .hexpand(true)
+            .can_shrink(true)
+            .height_request(280)
+            .build();
+
+        let url_c = url.clone();
+        let pic_c = picture.clone();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+        std::thread::spawn(move || {
+            if let Ok(out) = std::process::Command::new("curl")
+                .args(["-sL", "--max-time", "15", &url_c])
+                .output()
+            {
+                if out.status.success() {
+                    let _ = tx.send(out.stdout);
+                }
+            }
+        });
+
+        glib::timeout_add_local(Duration::from_millis(80), move || {
+            match rx.try_recv() {
+                Ok(bytes) => {
+                    let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
+                    if loader.write(&bytes).is_ok() {
+                        let _ = loader.close();
+                        if let Some(pb) = loader.pixbuf() {
+                            let texture = gtk4::gdk::Texture::for_pixbuf(&pb);
+                            pic_c.set_paintable(Some(&texture));
+                        }
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
+        });
+
+        carousel.append(&picture);
+    }
 }

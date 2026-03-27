@@ -4,6 +4,8 @@ use gtk4::prelude::*;
 use gtk4::{glib, Align, Box as GBox, Button, Label, Orientation, ScrolledWindow, Widget};
 use libadwaita::prelude::*;
 use libadwaita::{ActionRow, PreferencesGroup, PreferencesPage};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use rakuos_updates::{OverlayStatus, SystemStatus};
 
@@ -98,14 +100,22 @@ pub fn build() -> Widget {
     rollback_btn.connect_clicked(move |btn| {
         btn.set_sensitive(false);
         btn.set_label("Rolling back…");
-        let btn_c = btn.clone();
+        let (tx, rx) = mpsc::channel::<()>();
         std::thread::spawn(move || {
             let _: Vec<_> = rakuos_updates::rollback_stream().collect();
-            glib::idle_add_once(move || {
-                btn_c.set_label("Reboot to Apply");
-                // Schedule reboot
-                let _ = rakuos_updates::schedule_reboot();
-            });
+            let _ = tx.send(());
+        });
+        let btn_c = btn.clone();
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            match rx.try_recv() {
+                Ok(_) => {
+                    btn_c.set_label("Reboot to Apply");
+                    let _ = rakuos_updates::schedule_reboot();
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
         });
     });
 
@@ -134,16 +144,24 @@ pub fn build() -> Widget {
     fw_btn.connect_clicked(move |btn| {
         btn.set_sensitive(false);
         btn.set_label("Checking…");
-        let btn_c = btn.clone();
+        let (tx, rx) = mpsc::channel::<()>();
         std::thread::spawn(move || {
-            // Use fwupdmgr refresh + get-updates
             let _ = std::process::Command::new("fwupdmgr")
                 .arg("refresh")
                 .status();
-            glib::idle_add_once(move || {
-                btn_c.set_label("Refresh");
-                btn_c.set_sensitive(true);
-            });
+            let _ = tx.send(());
+        });
+        let btn_c = btn.clone();
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            match rx.try_recv() {
+                Ok(_) => {
+                    btn_c.set_label("Refresh");
+                    btn_c.set_sensitive(true);
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
         });
     });
 
@@ -153,9 +171,7 @@ pub fn build() -> Widget {
     pref_page.add(&firmware_group);
 
     // ── Load system status in background ─────────────────────────────────
-    let (tx, rx) = glib::MainContext::channel::<(SystemStatus, OverlayStatus)>(
-        glib::Priority::DEFAULT,
-    );
+    let (tx, rx) = mpsc::channel::<(SystemStatus, OverlayStatus)>();
 
     std::thread::spawn(move || {
         let status = rakuos_updates::get_system_status();
@@ -163,45 +179,48 @@ pub fn build() -> Widget {
         let _ = tx.send((status, overlay));
     });
 
-    rx.attach(None, move |(status, overlay)| {
-        // Update system info rows
-        if !status.image.is_empty() {
-            os_row.set_subtitle(&status.image);
-        } else {
-            os_row.set_subtitle("Unknown");
+    glib::timeout_add_local(Duration::from_millis(80), move || {
+        match rx.try_recv() {
+            Ok((status, overlay)) => {
+                if !status.image.is_empty() {
+                    os_row.set_subtitle(&status.image);
+                } else {
+                    os_row.set_subtitle("Unknown");
+                }
+
+                if !status.version.is_empty() {
+                    version_row.set_subtitle(&status.version);
+                } else {
+                    version_row.set_subtitle("Unknown");
+                }
+
+                if !status.digest.is_empty() {
+                    let short = if status.digest.len() > 20 {
+                        format!("{}…", &status.digest[..20])
+                    } else {
+                        status.digest.clone()
+                    };
+                    digest_row.set_subtitle(&short);
+                } else {
+                    digest_row.set_subtitle("Unknown");
+                }
+
+                overlay_count_row.set_subtitle(&format!("{} packages", overlay.package_count));
+
+                let overlay_status_text = if overlay.is_dirty {
+                    "Modified (sync recommended)"
+                } else if overlay.has_digest {
+                    "In sync with base image"
+                } else {
+                    "No overlay state recorded"
+                };
+                overlay_dirty_row.set_subtitle(overlay_status_text);
+
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => glib::ControlFlow::Break,
         }
-
-        if !status.version.is_empty() {
-            version_row.set_subtitle(&status.version);
-        } else {
-            version_row.set_subtitle("Unknown");
-        }
-
-        if !status.digest.is_empty() {
-            let short = if status.digest.len() > 20 {
-                format!("{}…", &status.digest[..20])
-            } else {
-                status.digest.clone()
-            };
-            digest_row.set_subtitle(&short);
-        } else {
-            digest_row.set_subtitle("Unknown");
-        }
-
-        // Update overlay info
-        overlay_count_row
-            .set_subtitle(&format!("{} packages", overlay.package_count));
-
-        let overlay_status_text = if overlay.is_dirty {
-            "Modified (sync recommended)"
-        } else if overlay.has_digest {
-            "In sync with base image"
-        } else {
-            "No overlay state recorded"
-        };
-        overlay_dirty_row.set_subtitle(overlay_status_text);
-
-        glib::ControlFlow::Break
     });
 
     scroll.upcast()

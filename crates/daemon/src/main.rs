@@ -31,6 +31,36 @@ fn daemon_cache_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".cache/rakuos/daemon-update-cache.json")
 }
 
+/// Locate the installed UI frontend binary (gtk preferred, then qt).
+/// Checks sibling directory of this binary first (covers dev builds), then libexec.
+fn ui_binary() -> std::path::PathBuf {
+    let libexec = std::path::Path::new("/usr/libexec/rakuos/software");
+    let candidates = ["rakuos-software-gtk", "rakuos-software-qt"];
+
+    // Check sibling directory (dev builds in target/debug/)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in candidates {
+                let p = dir.join(name);
+                if p.exists() {
+                    return p;
+                }
+            }
+        }
+    }
+
+    // Check installed libexec location
+    for name in candidates {
+        let p = libexec.join(name);
+        if p.exists() {
+            return p;
+        }
+    }
+
+    // Last resort: hope it's on PATH
+    std::path::PathBuf::from("rakuos-software-gtk")
+}
+
 /// If the UI is already running (PID file + /proc), write the show-flag so
 /// the UI's polling timer picks it up. Otherwise spawn a fresh instance.
 fn signal_or_spawn_ui() {
@@ -43,7 +73,7 @@ fn signal_or_spawn_ui() {
     if alive {
         let _ = std::fs::write(show_flag_path(), "1");
     } else {
-        let _ = std::process::Command::new("rakuos-software-qt").spawn();
+        let _ = std::process::Command::new(ui_binary()).spawn();
     }
 }
 
