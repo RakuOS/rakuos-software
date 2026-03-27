@@ -24,5 +24,12 @@ rakuos-appimages = { workspace = true }
 # System tray via D-Bus StatusNotifierItem (KDE + GNOME AppIndicator)
 ksni = "0.2"
 
+# Badge drawing — SVG rendering + pixel manipulation
+resvg = "0.44"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Desktop notifications
 notify-rust = "4"
+
+# POSIX signal sending (kill UI on Quit)
+libc = "0.2"

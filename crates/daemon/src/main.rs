@@ -88,6 +88,15 @@ async fn main() -> anyhow::Result<()> {
         match msg {
             DaemonMsg::Quit => {
                 log::info!("Quitting daemon.");
+                // Kill the UI if it's running
+                if let Some(pid) = std::fs::read_to_string(pid_file())
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                {
+                    if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+                    }
+                }
                 std::process::exit(0);
             }
             DaemonMsg::OpenUi => {

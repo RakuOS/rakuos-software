@@ -137,12 +137,12 @@ pub async fn check_for_update() -> UpdateInfo {
 
 /// Stream output from `bootc upgrade`. Yields log lines then "__done__<code>".
 pub fn upgrade_stream() -> impl Iterator<Item = String> {
-    run_stream(&["sudo", "bootc", "upgrade"])
+    run_stream_owned(vec!["sudo".into(), "bootc".into(), "upgrade".into()])
 }
 
 /// Stream output from `bootc upgrade --check` (dry-run).
 pub fn check_stream() -> impl Iterator<Item = String> {
-    run_stream(&["sudo", "bootc", "upgrade", "--check"])
+    run_stream_owned(vec!["sudo".into(), "bootc".into(), "upgrade".into(), "--check".into()])
 }
 
 /// Stream output from `bootc switch <target>` or `bootc upgrade`.
@@ -168,12 +168,12 @@ pub fn upgrade_image_stream(update_type: &str, repo_url: &str, new_tag: &str) ->
 
 /// Stream output from overlay package upgrade via rakuos-update.
 pub fn upgrade_packages_stream() -> impl Iterator<Item = String> {
-    run_stream(&["sudo", "/usr/libexec/rakuos/rakuos-update", "upgrade"])
+    run_stream_owned(vec!["sudo".into(), "/usr/libexec/rakuos/rakuos-update".into(), "upgrade".into()])
 }
 
 /// Stream output from `bootc rollback`.
 pub fn rollback_stream() -> impl Iterator<Item = String> {
-    run_stream(&["sudo", "bootc", "rollback"])
+    run_stream_owned(vec!["sudo".into(), "bootc".into(), "rollback".into()])
 }
 
 /// Schedule a system reboot. Returns (success, error_message).
@@ -274,48 +274,53 @@ async fn get_ghcr_token(repo_path: &str) -> Result<String> {
     Ok(resp["token"].as_str().unwrap_or("").to_string())
 }
 
-fn run_stream(cmd: &[&str]) -> impl Iterator<Item = String> {
-    use std::io::BufRead;
-    use std::process::Stdio;
-
-    let mut child = Command::new(cmd[0])
-        .args(&cmd[1..])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to spawn command");
-
-    let stdout = child.stdout.take().unwrap();
-    let lines: Vec<String> = std::io::BufReader::new(stdout)
-        .lines()
-        .map_while(Result::ok)
-        .collect();
-    let code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-
-    lines
-        .into_iter()
-        .chain(std::iter::once(format!("__done__{}", code)))
-}
-
 fn run_stream_owned(cmd: Vec<String>) -> impl Iterator<Item = String> {
     use std::io::BufRead;
     use std::process::Stdio;
+    use std::sync::mpsc;
 
-    let mut child = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to spawn command");
+    let (tx, rx) = mpsc::channel::<String>();
 
-    let stdout = child.stdout.take().unwrap();
-    let lines: Vec<String> = std::io::BufReader::new(stdout)
-        .lines()
-        .map_while(Result::ok)
-        .collect();
-    let code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    std::thread::spawn(move || {
+        let mut child = match Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(format!("Error: {}", e));
+                let _ = tx.send("__done__1".to_string());
+                return;
+            }
+        };
 
-    lines
-        .into_iter()
-        .chain(std::iter::once(format!("__done__{}", code)))
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        // Stream stdout and stderr concurrently so neither blocks the other
+        let tx_out = tx.clone();
+        let stdout_thread = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx_out.send(line);
+            }
+        });
+
+        let tx_err = tx.clone();
+        let stderr_thread = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                let _ = tx_err.send(line);
+            }
+        });
+
+        stdout_thread.join().ok();
+        stderr_thread.join().ok();
+
+        let code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+        let _ = tx.send(format!("__done__{}", code));
+        // tx drops here, closing the channel and ending the receiver iterator
+    });
+
+    rx.into_iter()
 }

@@ -556,8 +556,9 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                                 None => {
                                     apps.insert(app.id.clone(), app);
                                 }
-                                Some(ex) if ex.source == "native" && app.source == "flatpak" => {
-                                    // Keep native metadata; enrich with flatpak screenshots/icon if missing
+                                Some(ex) if ex.source != "flatpak" && app.source == "flatpak" => {
+                                    // Native already primary — enrich it with flatpak metadata
+                                    // and preserve flatpak under its own key.
                                     let app_id = app.id.clone();
                                     let ex = apps.get_mut(&app_id).unwrap();
                                     if ex.screenshots.is_empty() && !app.screenshots.is_empty() {
@@ -566,10 +567,23 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                                     if ex.icon.is_empty() && !app.icon.is_empty() {
                                         ex.icon = app.icon.clone();
                                     }
-                                    // Also store flatpak version under its own key
-                                    apps.insert(format!("flatpak:{}", app.id), app);
+                                    let fp_key = format!("flatpak:{}", app_id);
+                                    if !apps.contains_key(&fp_key) {
+                                        apps.insert(fp_key, app);
+                                    }
+                                }
+                                Some(ex) if ex.source == "flatpak" && app.source != "flatpak" => {
+                                    // Flatpak was stored first; native arrived later.
+                                    // Promote native to primary, move flatpak to its own key.
+                                    let fp_key = format!("flatpak:{}", app.id);
+                                    let old_fp = apps.remove(&app.id).unwrap();
+                                    apps.insert(app.id.clone(), app);
+                                    if !apps.contains_key(&fp_key) {
+                                        apps.insert(fp_key, old_fp);
+                                    }
                                 }
                                 _ => {
+                                    // Same source type conflict — last writer wins.
                                     apps.insert(app.id.clone(), app);
                                 }
                             }

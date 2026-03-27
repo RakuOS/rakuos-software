@@ -752,9 +752,22 @@ impl SoftwareBackend {
 }
 
 fn parse_layers_progress(line: &str) -> Option<i32> {
-    let re = regex::Regex::new(r"layers\[(\d+)/(\d+)\]").ok()?;
-    let caps = re.captures(line)?;
-    let n: i32 = caps[1].parse().ok()?;
-    let total: i32 = caps[2].parse().ok()?;
-    if total > 0 { Some((n * 100 / total).min(100)) } else { None }
+    // Match various formats bootc/ostree/skopeo may emit:
+    //   "layers[3/50]"   "layers [3/50]"   "[3/50]"   "3/50 layers"
+    //   "Fetching 3 of 50"   "Pulling layer 3/50"
+    let patterns: &[&str] = &[
+        r"layers?\s*\[(\d+)/(\d+)\]",
+        r"\[(\d+)/(\d+)\]",
+        r"(\d+)\s*/\s*(\d+)\s+layers?",
+        r"(\d+)\s+of\s+(\d+)",
+        r"layer[s]?\s+(\d+)/(\d+)",
+    ];
+    for pat in patterns {
+        if let Some(caps) = regex::Regex::new(pat).ok()?.captures(line) {
+            let n: i32 = caps[1].parse().ok()?;
+            let total: i32 = caps[2].parse().ok()?;
+            if total > 0 { return Some((n * 100 / total).min(100)); }
+        }
+    }
+    None
 }
