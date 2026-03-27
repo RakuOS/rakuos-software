@@ -6,7 +6,7 @@ Release:        1%{?dist}
 Summary:        RakuOS Software Center
 License:        GPL-3.0-or-later
 URL:            https://rakuos.org
-Source0:        %{name}-%{version}.tar.gz
+Source0:        https://github.com/RakuOS/rakuos-software/archive/refs/heads/main/%{name}-main.tar.gz
 
 BuildRequires:  rust-packaging >= 21
 BuildRequires:  cargo-rpm-macros
@@ -62,7 +62,7 @@ Designed for KDE Plasma and other Qt-based desktop environments.
 
 # ─── Prep ────────────────────────────────────────────────────────────────────
 %prep
-%autosetup -n %{name}-%{version}
+%autosetup -n %{name}-main
 %cargo_prep
 
 # ─── Build ───────────────────────────────────────────────────────────────────
