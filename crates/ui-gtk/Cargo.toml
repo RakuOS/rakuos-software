@@ -1,0 +1,28 @@
+[package]
+name = "rakuos-software-gtk"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rakuos-software-gtk"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+rakuos-appstream = { workspace = true }
+rakuos-flatpak   = { workspace = true }
+rakuos-packages  = { workspace = true }
+rakuos-updates   = { workspace = true }
+rakuos-webapps   = { workspace = true }
+rakuos-appimages = { workspace = true }
+rakuos-firmware  = { workspace = true }
+rakuos-home      = { workspace = true }
+rakuos-reviews   = { workspace = true }
+gtk4 = "0.9"
+libadwaita = { version = "0.7", features = ["v1_6"] }

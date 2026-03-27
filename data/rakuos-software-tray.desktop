@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=RakuOS Software
+Comment=RakuOS Software Center background service
+Exec=/usr/libexec/rakuos/rakuos-software-tray
+Icon=system-software-update
+Terminal=false
+Type=Application
+NoDisplay=true
+StartupNotify=false
+StartupWMClass=org.rakuos.Software
+X-GNOME-Autostart-Delay=10
+X-GNOME-Autostart-enabled=true
+X-KDE-SubstituteUID=false
