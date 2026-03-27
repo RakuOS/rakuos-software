@@ -68,7 +68,7 @@ Designed for KDE Plasma and other Qt-based desktop environments.
 %build
 cargo build --locked --release --bin rakuos-software-gtk
 cargo build --locked --release --bin rakuos-software-qt
-cargo build --locked --release --bin rakuos-software-daemon
+cargo build --locked --release --bin rakuos-software-tray
 
 # ─── Install ─────────────────────────────────────────────────────────────────
 %install
