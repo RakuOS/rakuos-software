@@ -25,6 +25,15 @@ fn settings_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".config/rakuos/software-settings.json")
 }
 
+fn show_flag_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rakuos-software-show")
+}
+
+fn daemon_cache_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home).join(".cache/rakuos/daemon-update-cache.json")
+}
+
 fn append_log(text: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(log_path()) {
@@ -68,6 +77,10 @@ pub struct SoftwareBackend {
     systemStatusChanged: qt_signal!(),
     settingsJson:      qt_property!(QString; NOTIFY settingsChanged),
     settingsChanged:   qt_signal!(),
+
+    // Background update badge count (populated by daemon cache or startup check)
+    pendingUpdateCount: qt_property!(i32; NOTIFY pendingUpdateCountChanged),
+    pendingUpdateCountChanged: qt_signal!(),
 
     // Shared state between Rust threads and Qt
     shared: Option<Arc<SharedState>>,
@@ -192,6 +205,32 @@ pub struct SoftwareBackend {
             shared.result.store(1, Ordering::Relaxed);
             shared.running.store(false, Ordering::Relaxed);
         });
+    }),
+
+    // ── Web App catalog ───────────────────────────────────────────────────────
+
+    loadWebAppCatalog: qt_method!(fn loadWebAppCatalog(&mut self) {
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let apps = rakuos_webapps::get_catalog();
+            let json = serde_json::to_string(&apps).unwrap_or_default();
+            let _ = std::fs::write(log_path(), &json);
+            shared.result.store(1, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    // ── AppImage settings ─────────────────────────────────────────────────────
+
+    saveAppImageSettings: qt_method!(fn saveAppImageSettings(&mut self, id: QString, update_source: QString, update_url: QString, update_pattern: QString) -> QString {
+        let (ok, msg) = rakuos_appimages::save_settings(
+            &id.to_string(),
+            &update_source.to_string(),
+            &update_url.to_string(),
+            &update_pattern.to_string(),
+        );
+        serde_json::json!({ "ok": ok, "msg": msg }).to_string().into()
     }),
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -640,6 +679,52 @@ pub struct SoftwareBackend {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(&path, json.to_string());
+    }),
+
+    // ── Startup helpers ───────────────────────────────────────────────────────
+
+    // Pre-warm the appstream cache in a background thread so first searches
+    // and category loads are instant.
+    warmCache: qt_method!(fn warmCache(&mut self) {
+        std::thread::spawn(|| {
+            let _ = rakuos_appstream::get_appstream();
+            log::info!("AppStream cache warmed.");
+        });
+    }),
+
+    // Check if the tray daemon wrote a "show window" flag.
+    // Returns true once (deletes the flag) so QML can show + activate the window.
+    checkShowRequest: qt_method!(fn checkShowRequest(&mut self) -> bool {
+        let flag = show_flag_path();
+        if flag.exists() {
+            let _ = std::fs::remove_file(&flag);
+            return true;
+        }
+        false
+    }),
+
+    // Read cached update count written by the daemon's last background check.
+    // Populates pendingUpdateCount so the UI can show a badge without
+    // blocking on a fresh check.
+    loadDaemonUpdateCache: qt_method!(fn loadDaemonUpdateCache(&mut self) {
+        let path = daemon_cache_path();
+        if let Ok(json) = std::fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                let count = val["total"].as_i64().unwrap_or(0) as i32;
+                if self.pendingUpdateCount != count {
+                    self.pendingUpdateCount = count;
+                    self.pendingUpdateCountChanged();
+                }
+            }
+        }
+    }),
+
+    // Return the raw JSON from the daemon's update cache, or "" if not yet
+    // written (daemon still running its first check).
+    loadUpdatesCache: qt_method!(fn loadUpdatesCache(&mut self) -> QString {
+        std::fs::read_to_string(daemon_cache_path())
+            .unwrap_or_default()
+            .into()
     }),
 }
 

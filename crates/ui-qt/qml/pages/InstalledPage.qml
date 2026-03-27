@@ -119,6 +119,7 @@ Item {
                 emptyText: "No overlay packages installed."
                 onRemoveApp: backend.removeApp(appId, "native")
                 onReloadRequested: installedPage.loadInstalled()
+                onAppClicked: root.showDetail(app)
             }
 
             // Flatpak tab
@@ -127,6 +128,7 @@ Item {
                 emptyText: "No Flatpaks installed."
                 onRemoveApp: backend.removeApp(appId, "flatpak")
                 onReloadRequested: installedPage.loadInstalled()
+                onAppClicked: root.showDetail(app)
             }
 
             // AppImages tab
@@ -135,6 +137,7 @@ Item {
                 emptyText: "No AppImages installed."
                 onRemoveApp: backend.removeApp(appId, "appimage")
                 onReloadRequested: installedPage.loadInstalled()
+                onAppClicked: root.showDetail(app)
             }
 
             // Web Apps tab
@@ -143,6 +146,7 @@ Item {
                 emptyText: "No web apps installed."
                 onRemoveApp: backend.removeApp(appId, "webapp")
                 onReloadRequested: installedPage.loadInstalled()
+                onAppClicked: root.showDetail(app)
             }
         }
     }
@@ -156,6 +160,7 @@ Item {
         property string emptyText: "Nothing installed."
         signal removeApp(string appId)
         signal reloadRequested()
+        signal appClicked(var app)
 
         Label {
             anchors.centerIn: parent
@@ -180,16 +185,28 @@ Item {
 
                     Rectangle {
                         id: appRowRect
-                        width: listView.width
+                        width: parent.width
                         height: 52
-                        color: "transparent"
+                        color: rowClickArea.containsMouse && !appRowRect.removing
+                            ? Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.06)
+                            : "transparent"
 
                         property bool removing: false
                         property bool removed: false
                         visible: !removed
 
+                        // Row click — navigate to detail page (z:-1 so Uninstall button wins)
+                        MouseArea {
+                            id: rowClickArea
+                            anchors.fill: parent
+                            z: -1
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: listView.appClicked(modelData)
+                        }
+
                         RowLayout {
-                            anchors { fill: parent; leftMargin: 16; rightMargin: 16 }
+                            anchors { fill: parent; leftMargin: 16; rightMargin: 24 }
                             spacing: 12
 
                             AppIcon {
@@ -230,13 +247,16 @@ Item {
 
                             // Uninstall button / busy / result
                             Button {
-                                text: "Uninstall"
                                 visible: !appRowRect.removing
                                 flat: true
+                                implicitWidth: 80
+                                implicitHeight: 32
                                 contentItem: Label {
                                     text: "Uninstall"
                                     color: "#e53935"
                                     font.pixelSize: 12
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
                                 }
                                 onClicked: {
                                     appRowRect.removing = true;

@@ -8,9 +8,53 @@ extern "C" {
     fn set_qt_app_properties();
 }
 
+pub fn pid_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home).join(".cache/rakuos/software-ui.pid")
+}
+
+fn write_pid_file() {
+    let path = pid_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, std::process::id().to_string());
+}
+
+/// Locate the daemon binary: prefer a sibling in the same directory as this
+/// binary (covers dev builds in target/debug/), fall back to PATH.
+fn daemon_binary() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .join("rakuos-software-tray");
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    std::path::PathBuf::from("rakuos-software-tray")
+}
+
+fn ensure_daemon_running() {
+    // pgrep -x fails for names >15 chars on Linux; use -f to match full cmdline
+    let running = std::process::Command::new("pgrep")
+        .args(["-f", "rakuos-software-tray"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !running {
+        log::info!("Starting rakuos-software-tray daemon...");
+        let _ = std::process::Command::new(daemon_binary()).spawn();
+    }
+}
+
 fn main() {
     env_logger::init();
     std::env::set_var("QML_XHR_ALLOW_FILE_READ", "1");
+
+    write_pid_file();
+    ensure_daemon_running();
 
     qmetaobject::qml_register_type::<SoftwareBackend>(
         c"org.rakuos.software",
@@ -27,4 +71,7 @@ fn main() {
         .unwrap_or_else(|_| std::path::PathBuf::from(&qml_dir));
     engine.load_file(format!("file://{}/main.qml", qml_dir.display()).into());
     engine.exec();
+
+    // Clean up on exit
+    let _ = std::fs::remove_file(pid_file());
 }

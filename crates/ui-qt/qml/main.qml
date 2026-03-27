@@ -14,7 +14,37 @@ ApplicationWindow {
     minimumHeight: 600
     title: "RakuOS Software"
 
+    // Close to tray — hide window instead of quitting
+    onClosing: function(close) {
+        close.accepted = false;
+        root.visible = false;
+    }
+
     SoftwareBackend { id: backend }
+
+    // ── Startup init ──────────────────────────────────────────────────────────
+    Component.onCompleted: {
+        // Pre-warm AppStream cache so first search/browse is instant
+        backend.warmCache();
+        // Load any cached update count from the last daemon check for badge display
+        backend.loadDaemonUpdateCache();
+    }
+
+    // ── Show-request poll (tray "Open" while window is hidden) ────────────────
+    Timer {
+        id: showRequestTimer
+        interval: 1500
+        repeat: true
+        running: true
+        onTriggered: {
+            if (backend.checkShowRequest()) {
+                root.visible = true;
+                root.raise();
+                root.requestActivate();
+                backend.navigate(0);   // always return to Home
+            }
+        }
+    }
 
     // Dim secondary text that works in both light and dark mode
     property color dimText: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.6)
@@ -212,6 +242,7 @@ ApplicationWindow {
                                 { label: "🏠  Home",       page: 0 },
                                 { label: "📦  Installed",  page: 3 },
                                 { label: "🌐  Web Apps",   page: 8 },
+                                { label: "📁  AppImages",  page: 9 },
                                 { label: "🔄  Updates",    page: 4 },
                                 { label: "⚙️   System",    page: 5 },
                                 { label: "🛠  Settings",   page: 6 },
@@ -451,8 +482,11 @@ ApplicationWindow {
                     onBackRequested: root.hideDetail()
                 }
 
-                // Page 8: Web Apps (placeholder — same as Installed Web Apps tab)
-                Item { id: webAppsPage }
+                // Page 8: Web Apps catalog
+                WebAppsPage { id: webAppsPage }
+
+                // Page 9: AppImages
+                AppImagesPage { id: appImagesPage }
             }
         }
 
@@ -465,7 +499,8 @@ ApplicationWindow {
                     case 4: updatesPage.activate(); break;
                     case 5: systemPageItem.activate(); break;
                     case 7: detailPageItem.loadApp(root.detailApp); break;
-                    case 8: installedPage.activate(); backend.navigate(3); break;
+                    case 8: webAppsPage.activate(); break;
+                    case 9: appImagesPage.activate(); break;
                 }
             }
         }

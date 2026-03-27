@@ -2,15 +2,13 @@
 // Works on KDE Plasma, GNOME (with AppIndicator extension), COSMIC.
 
 use ksni::Tray;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 
 use crate::DaemonMsg;
 
-#[derive(Debug)]
 pub struct SoftwareTray {
     pub update_count: usize,
-    pub tx: mpsc::Sender<DaemonMsg>,
+    pub tx: mpsc::SyncSender<DaemonMsg>,
 }
 
 impl Tray for SoftwareTray {
@@ -27,7 +25,7 @@ impl Tray for SoftwareTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        Vec::new() // rely on icon_name theme lookup
+        Vec::new()
     }
 
     fn title(&self) -> String {
@@ -58,7 +56,7 @@ impl Tray for SoftwareTray {
                 label: "Open RakuOS Software".into(),
                 icon_name: "system-software-install".into(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.tx.try_send(DaemonMsg::OpenUi);
+                    let _ = tray.tx.send(DaemonMsg::OpenUi);
                 }),
                 ..Default::default()
             }
@@ -67,7 +65,7 @@ impl Tray for SoftwareTray {
                 label: "Check for Updates".into(),
                 icon_name: "view-refresh".into(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.tx.try_send(DaemonMsg::CheckNow);
+                    let _ = tray.tx.send(DaemonMsg::CheckNow);
                 }),
                 ..Default::default()
             }
@@ -77,7 +75,7 @@ impl Tray for SoftwareTray {
                 label: "Quit".into(),
                 icon_name: "application-exit".into(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.tx.try_send(DaemonMsg::Quit);
+                    let _ = tray.tx.send(DaemonMsg::Quit);
                 }),
                 ..Default::default()
             }
@@ -86,8 +84,11 @@ impl Tray for SoftwareTray {
     }
 }
 
-/// Spawn the ksni tray service. Returns a handle to update the count.
-pub fn spawn(tx: mpsc::Sender<DaemonMsg>) -> anyhow::Result<ksni::Handle<SoftwareTray>> {
+/// Spawn the ksni tray service. Returns a (handle, std receiver) pair.
+/// The caller bridges the std receiver into the async message loop.
+pub fn spawn(
+    tx: mpsc::SyncSender<DaemonMsg>,
+) -> anyhow::Result<ksni::Handle<SoftwareTray>> {
     let service = ksni::TrayService::new(SoftwareTray {
         update_count: 0,
         tx,

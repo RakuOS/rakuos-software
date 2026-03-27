@@ -11,13 +11,35 @@ Item {
     property bool updating: false
     property bool rebootRequired: false
 
+    // On activate: read daemon cache — don't trigger our own check.
+    // If the cache doesn't exist yet the daemon is still doing its first
+    // check, so show "Checking…" and poll until it appears.
     function activate() {
-        if (updateData === null && !checking) {
-            checkUpdates();
+        _loadFromCache();
+    }
+
+    function _loadFromCache() {
+        var cached = backend.loadUpdatesCache();
+        if (cached && cached.length > 0) {
+            daemonPollTimer.stop();
+            checking = false;
+            try {
+                updateData = JSON.parse(cached);
+                rebootRequired = updateData.reboot_required === true;
+                // Keep badge in sync
+                backend.pendingUpdateCount = totalUpdates;
+            } catch(e) { updateData = {}; }
+        } else {
+            // Daemon hasn't written cache yet — wait for it
+            checking = true;
+            updateData = null;
+            daemonPollTimer.start();
         }
     }
 
+    // Manual refresh — runs a full check via the backend op system
     function checkUpdates() {
+        daemonPollTimer.stop();
         checking = true;
         updateData = null;
         rebootRequired = false;
@@ -25,6 +47,7 @@ Item {
         pollTimer.start();
     }
 
+    // Poll the op while a manual check (or update) is in progress
     Timer {
         id: pollTimer
         interval: 400
@@ -41,9 +64,18 @@ Item {
                     if (updateData && updateData.reboot_required) {
                         rebootRequired = true;
                     }
+                    backend.pendingUpdateCount = totalUpdates;
                 }
             }
         }
+    }
+
+    // Poll for the daemon cache file when the daemon is doing its first check
+    Timer {
+        id: daemonPollTimer
+        interval: 3000
+        repeat: true
+        onTriggered: _loadFromCache()
     }
 
     // Total update count
@@ -73,9 +105,9 @@ Item {
 
                 Label {
                     text: {
-                        if (checking) return "Checking for updates…";
                         if (updating) return "Updating…";
-                        if (updateData === null) return "Check for available updates";
+                        if (checking) return "Checking for updates…";
+                        if (updateData === null) return "No update data yet";
                         if (rebootRequired)      return "Reboot required to apply system upgrade";
                         if (totalUpdates === 0)  return "Your system is up to date";
                         return totalUpdates + " update" + (totalUpdates !== 1 ? "s" : "") + " available";
@@ -105,11 +137,11 @@ Item {
                 }
 
                 Button {
-                    text: "🔄 Reboot Now"
                     visible: rebootRequired
                     highlighted: true
+                    implicitWidth: 130; implicitHeight: 32
                     background: Rectangle { color: "#1976d2"; radius: 4 }
-                    contentItem: Label { text: "🔄 Reboot Now"; color: "white"; font.pixelSize: 13 }
+                    contentItem: Label { text: "🔄 Reboot Now"; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     onClicked: backend.rebootSystem()
                 }
             }
@@ -165,22 +197,24 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            // Initial state: not checked yet
+            // Daemon is running its first check
             Column {
                 anchors.centerIn: parent
                 spacing: 16
-                visible: updateData === null && !checking
+                visible: updateData === null && checking
 
+                BusyIndicator { anchors.horizontalCenter: parent.horizontalCenter; running: true }
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "🔄"
-                    font.pixelSize: 48
+                    text: "Checking for updates…"
+                    color: root.dimText
+                    font.pixelSize: 14
                 }
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Press \"Check for Updates\" to get started"
+                    text: "The background service is running its check"
                     color: root.dimText
-                    font.pixelSize: 14
+                    font.pixelSize: 12
                 }
             }
 
@@ -336,7 +370,7 @@ Item {
                     // ── Flatpak runtimes / add-ons ────────────────────────────
                     UpdateSection {
                         visible: runtimePkgs.length > 0
-                        title: "Add-ons"
+                        title: "Runtimes/Add-ons"
                         packages: {
                             if (!updateData || !updateData.flatpak) return [];
                             return updateData.flatpak.filter(function(p) { return p.runtime; })
@@ -349,7 +383,7 @@ Item {
                     // ── System packages ───────────────────────────────────────
                     UpdateSection {
                         visible: sysPkgs.length > 0
-                        title: "System Dependencies"
+                        title: "Overlay Dependencies"
                         packages: {
                             if (!updateData || !updateData.packages) return [];
                             return updateData.packages.filter(function(p) { return !p.gui; })

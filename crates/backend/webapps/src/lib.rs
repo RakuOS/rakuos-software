@@ -274,7 +274,10 @@ fn parse_webapp(
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
-        screenshots: Vec::new(),
+        screenshots: v["screenshots"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
         icon_path: String::new(),
         source: "webapp".to_string(),
         installed: false,

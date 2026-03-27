@@ -180,19 +180,19 @@ Item {
                         }
 
                         Button {
-                            text: "↻ Rollback"
                             visible: !upgrading
                             flat: true
-                            contentItem: Label { text: "↻ Rollback"; color: "#e53935"; font.pixelSize: 12 }
+                            implicitWidth: 90; implicitHeight: 32
+                            contentItem: Label { text: "↻ Rollback"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             onClicked: rollbackConfirmDlg.open()
                         }
 
                         Button {
-                            text: "🔄 Reboot to Apply"
                             visible: rebootRequired
                             highlighted: true
+                            implicitWidth: 140; implicitHeight: 32
                             background: Rectangle { color: "#1976d2"; radius: 4 }
-                            contentItem: Label { text: "🔄 Reboot to Apply"; color: "white" }
+                            contentItem: Label { text: "🔄 Reboot to Apply"; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             onClicked: backend.rebootSystem()
                         }
                     }
@@ -412,9 +412,9 @@ Item {
                         Item { width: 8 }
 
                         Button {
-                            text: "Reset Overlay"
                             flat: true
-                            contentItem: Label { text: "Reset Overlay"; color: "#e53935"; font.pixelSize: 12 }
+                            implicitWidth: 110; implicitHeight: 32
+                            contentItem: Label { text: "Reset Overlay"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             onClicked: overlayResetConfirmDlg.open()
                         }
                     }

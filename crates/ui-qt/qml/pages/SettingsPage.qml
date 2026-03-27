@@ -368,12 +368,14 @@ Item {
                                         }
 
                                         Button {
-                                            text: "Remove"
                                             flat: true
+                                            implicitWidth: 72; implicitHeight: 30
                                             contentItem: Label {
                                                 text: "Remove"
                                                 color: "#e53935"
                                                 font.pixelSize: 12
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
                                             }
                                             onClicked: {
                                                 var res = JSON.parse(backend.removeFlatpakRemote(

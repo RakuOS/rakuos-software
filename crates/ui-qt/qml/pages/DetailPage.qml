@@ -30,9 +30,10 @@ Item {
         sourceSelector.currentIndex = bestIdx;
         _reloadScreenshots();
 
-        // Always fetch the full record: ensures sources (native + flatpak dropdown)
-        // are always populated even when the listing only returned one source.
-        if (app && app.id) {
+        // Fetch full record for native/flatpak apps to get multi-source data.
+        // Webapps and appimages carry complete data from the listing already.
+        var src = app ? (app.source || "") : "";
+        if (app && app.id && src !== "webapp" && src !== "appimage") {
             backend.loadAppById(app.id);
             detailFetchTimer.start();
         }
@@ -159,10 +160,18 @@ Item {
                     }
                 }
 
-                // Install / Remove button — updates reactively when source changes
+                // Launch button — webapps only, when installed
+                Button {
+                    visible: app != null && app.source === "webapp" && app.installed === true
+                    text: "Launch"
+                    highlighted: true
+                    onClicked: Qt.openUrlExternally(app.url || app.url_homepage || "")
+                }
+
+                // Install / Remove button — not shown for appimages (no catalog install)
                 Button {
                     id: installBtn
-                    visible: app != null
+                    visible: app != null && (app.source || "") !== "appimage"
                     Connections {
                         target: sourceSelector
                         function onCurrentIndexChanged() {
@@ -179,6 +188,21 @@ Item {
                             backend.installApp(displayApp.id || "", displayApp.source || "");
                         }
                     }
+                }
+
+                // Uninstall button — appimages only
+                Button {
+                    visible: app != null && app.source === "appimage"
+                    flat: true
+                    implicitWidth: 82; implicitHeight: 32
+                    contentItem: Label {
+                        text: "Uninstall"
+                        color: "#e53935"
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    onClicked: backend.removeApp(app.id || "", "appimage")
                 }
             }
         }
@@ -210,8 +234,10 @@ Item {
                         spacing: 20
 
                         AppIcon {
-                            iconPath: displayApp ? (displayApp.icon_path || "") : ""
-                            iconUrl: displayApp ? (displayApp.icon_url || "") : ""
+                            property string _ip: displayApp ? (displayApp.icon_path || "") : ""
+                            property bool _ipIsUrl: _ip.startsWith("http://") || _ip.startsWith("https://")
+                            iconPath: _ipIsUrl ? "" : _ip
+                            iconUrl:  _ipIsUrl ? _ip : (displayApp ? (displayApp.icon_url || "") : "")
                             iconName: app ? (app.name || app.id || "?") : "?"
                             size: 80
                             Layout.alignment: Qt.AlignTop
@@ -405,9 +431,14 @@ Item {
                         model: {
                             if (!displayApp) return [];
                             var cards = [];
-                            if (displayApp.url_homepage) cards.push({ label: "Website", value: displayApp.url_homepage });
-                            if (displayApp.package_name) cards.push({ label: displayApp.source === "flatpak" ? "Flatpak ID" : "Package", value: displayApp.package_name });
+                            if (displayApp.url_homepage) cards.push({ label: "Website",   value: displayApp.url_homepage });
+                            if (app && app.source === "webapp" && app.url)
+                                cards.push({ label: "App URL", value: app.url });
+                            if (displayApp.package_name && app && app.source !== "webapp" && app.source !== "appimage")
+                                cards.push({ label: displayApp.source === "flatpak" ? "Flatpak ID" : "Package", value: displayApp.package_name });
                             if (displayApp.developer)    cards.push({ label: "Developer", value: displayApp.developer });
+                            if (app && app.source === "appimage" && app.installed_path)
+                                cards.push({ label: "Path", value: app.installed_path });
                             return cards;
                         }
 
@@ -428,7 +459,162 @@ Item {
                         }
                     }
                 }
+
+                // ── AppImage update settings ───────────────────────────────────
+                Column {
+                    width: parent.width - 56
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 12
+                    topPadding: 24
+                    visible: app != null && app.source === "appimage"
+
+                    Label {
+                        text: "Update Settings"
+                        font.pixelSize: 15
+                        font.bold: true
+                    }
+
+                    Rectangle {
+                        width: parent.width
+                        height: aiSettingsCol.implicitHeight + 24
+                        radius: 8
+                        color: palette.button
+                        border.color: palette.mid
+                        border.width: 1
+
+                        Column {
+                            id: aiSettingsCol
+                            anchors { fill: parent; margins: 12 }
+                            spacing: 10
+
+                            // Update source
+                            RowLayout {
+                                width: parent.width
+                                spacing: 12
+
+                                Label {
+                                    text: "Source"
+                                    font.pixelSize: 12
+                                    Layout.preferredWidth: 80
+                                }
+
+                                ComboBox {
+                                    id: updateSourceCombo
+                                    Layout.fillWidth: true
+                                    model: ["none", "github", "gitlab", "url"]
+                                    Component.onCompleted: {
+                                        if (app && app.update_source) {
+                                            var idx = model.indexOf(app.update_source);
+                                            currentIndex = idx >= 0 ? idx : 0;
+                                        }
+                                    }
+
+                                    Connections {
+                                        target: detailPage
+                                        function onAppChanged() {
+                                            if (app && app.update_source) {
+                                                var idx = updateSourceCombo.model.indexOf(app.update_source);
+                                                updateSourceCombo.currentIndex = idx >= 0 ? idx : 0;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Update URL (hidden for "none")
+                            RowLayout {
+                                width: parent.width
+                                spacing: 12
+                                visible: updateSourceCombo.currentText !== "none"
+
+                                Label {
+                                    text: updateSourceCombo.currentText === "github" ? "owner/repo"
+                                        : updateSourceCombo.currentText === "gitlab" ? "namespace/repo"
+                                        : "URL"
+                                    font.pixelSize: 12
+                                    Layout.preferredWidth: 80
+                                }
+
+                                TextField {
+                                    id: updateUrlField
+                                    Layout.fillWidth: true
+                                    placeholderText: updateSourceCombo.currentText === "github" ? "e.g. owner/myapp"
+                                                   : updateSourceCombo.currentText === "gitlab"  ? "e.g. group/myapp"
+                                                   : "https://example.com/releases/latest"
+                                    text: app ? (app.update_url || "") : ""
+                                    font.pixelSize: 12
+                                }
+                            }
+
+                            // Pattern (hidden for "none")
+                            RowLayout {
+                                width: parent.width
+                                spacing: 12
+                                visible: updateSourceCombo.currentText !== "none"
+
+                                Label {
+                                    text: "Pattern"
+                                    font.pixelSize: 12
+                                    Layout.preferredWidth: 80
+                                }
+
+                                TextField {
+                                    id: updatePatternField
+                                    Layout.fillWidth: true
+                                    placeholderText: "e.g. *.AppImage"
+                                    text: app ? (app.update_pattern || "") : ""
+                                    font.pixelSize: 12
+                                }
+                            }
+
+                            // Save button + status
+                            RowLayout {
+                                width: parent.width
+                                spacing: 12
+
+                                Button {
+                                    text: "Save Settings"
+                                    highlighted: true
+                                    onClicked: {
+                                        if (!app) return;
+                                        var result = JSON.parse(backend.saveAppImageSettings(
+                                            app.id || "",
+                                            updateSourceCombo.currentText,
+                                            updateUrlField.text.trim(),
+                                            updatePatternField.text.trim()
+                                        ));
+                                        saveStatusLabel.text = result.ok ? "✓ Saved" : "✗ " + result.msg;
+                                        saveStatusLabel.color = result.ok ? "#4caf50" : "#e53935";
+                                        saveStatusTimer.restart();
+                                    }
+                                }
+
+                                Label {
+                                    id: saveStatusLabel
+                                    text: ""
+                                    font.pixelSize: 12
+                                }
+
+                                Timer {
+                                    id: saveStatusTimer
+                                    interval: 3000
+                                    onTriggered: saveStatusLabel.text = ""
+                                }
+                            }
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    // Re-initialize AppImage settings fields when app changes
+    onAppChanged: {
+        if (app && app.source === "appimage") {
+            var idx = updateSourceCombo.model.indexOf(app.update_source || "none");
+            updateSourceCombo.currentIndex = idx >= 0 ? idx : 0;
+            updateUrlField.text = app.update_url || "";
+            updatePatternField.text = app.update_pattern || "";
         }
     }
 }

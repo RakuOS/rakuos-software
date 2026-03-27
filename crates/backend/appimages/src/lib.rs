@@ -607,6 +607,27 @@ pub fn uninstall(id: &str) -> (bool, String) {
     (true, format!("{} uninstalled.", app.name))
 }
 
+/// Save update settings for an installed AppImage (update_source, update_url, update_pattern).
+pub fn save_settings(id: &str, update_source: &str, update_url: &str, update_pattern: &str) -> (bool, String) {
+    let sidecar_path = install_dir().join(format!("{}.json", id));
+    let Ok(content) = std::fs::read_to_string(&sidecar_path) else {
+        return (false, format!("AppImage '{}' not found.", id));
+    };
+    let Ok(mut app) = serde_json::from_str::<AppImage>(&content) else {
+        return (false, "Failed to read sidecar.".to_string());
+    };
+    app.update_source  = update_source.to_string();
+    app.update_url     = update_url.to_string();
+    app.update_pattern = update_pattern.to_string();
+    match serde_json::to_string_pretty(&app) {
+        Ok(json) => match std::fs::write(&sidecar_path, json) {
+            Ok(_)  => (true,  "Settings saved.".to_string()),
+            Err(e) => (false, format!("Write error: {}", e)),
+        },
+        Err(e) => (false, format!("Serialize error: {}", e)),
+    }
+}
+
 fn write_desktop(app_id: &str, name: &str, exec_path: &str, icon_path: &str, info: &AppImageInfo) -> String {
     let cats = if info.categories.is_empty() {
         "Utility;".to_string()
