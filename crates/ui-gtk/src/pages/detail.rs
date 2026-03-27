@@ -242,11 +242,65 @@ pub fn build(
         .build();
     main_box.append(&reviews_title);
 
+    // Outer container shown to the rest of the function
     let reviews_box = GBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(8)
         .build();
     main_box.append(&reviews_box);
+
+    // Inner box where the current page's cards are rendered
+    let reviews_content = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(8)
+        .build();
+    reviews_box.append(&reviews_content);
+
+    // Pagination row (hidden until reviews load)
+    let pagination_box = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .halign(Align::Center)
+        .margin_top(4)
+        .visible(false)
+        .build();
+    let prev_btn = Button::with_label("← Previous");
+    let page_lbl = Label::new(Some(""));
+    let next_btn = Button::with_label("Next →");
+    pagination_box.append(&prev_btn);
+    pagination_box.append(&page_lbl);
+    pagination_box.append(&next_btn);
+    reviews_box.append(&pagination_box);
+
+    // Shared state for pagination
+    const REVIEWS_PER_PAGE: usize = 10;
+    let all_reviews: Rc<RefCell<Vec<Review>>> = Rc::new(RefCell::new(Vec::new()));
+    let current_page: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+
+    // Shared render closure — filled in after reviews load
+    let render_fn: Rc<RefCell<Box<dyn Fn()>>> = Rc::new(RefCell::new(Box::new(|| {})));
+
+    // Prev button
+    {
+        let render_fn_c  = Rc::clone(&render_fn);
+        let current_page_c = Rc::clone(&current_page);
+        prev_btn.connect_clicked(move |_| {
+            let mut p = current_page_c.borrow_mut();
+            if *p > 0 { *p -= 1; drop(p); render_fn_c.borrow()(); }
+        });
+    }
+    // Next button
+    {
+        let render_fn_c    = Rc::clone(&render_fn);
+        let current_page_c = Rc::clone(&current_page);
+        let all_reviews_c  = Rc::clone(&all_reviews);
+        next_btn.connect_clicked(move |_| {
+            let total = all_reviews_c.borrow().len();
+            let max_page = total.saturating_sub(1) / REVIEWS_PER_PAGE;
+            let mut p = current_page_c.borrow_mut();
+            if *p < max_page { *p += 1; drop(p); render_fn_c.borrow()(); }
+        });
+    }
 
     // ── Shared state ──────────────────────────────────────────────────────────
     // (app_id, source, is_installed)
@@ -460,16 +514,49 @@ pub fn build(
                     }
                 }
 
-                // Reviews
+                // Reviews — paginated
                 let (avg, count) = rakuos_reviews::aggregate(&reviews);
                 if count > 0 {
                     rating_lbl.set_label(&format!("★ {:.1}  ({} reviews)", avg, count));
                 } else {
                     rating_lbl.set_label("No reviews yet");
                 }
-                for review in reviews.iter().take(10) {
-                    reviews_box.append(&build_review_row(review));
-                }
+
+                *all_reviews.borrow_mut() = reviews;
+                *current_page.borrow_mut() = 0;
+
+                // Build the render closure now that we have the data
+                let reviews_c      = Rc::clone(&all_reviews);
+                let page_c         = Rc::clone(&current_page);
+                let content_c      = reviews_content.clone();
+                let page_lbl_c     = page_lbl.clone();
+                let prev_c         = prev_btn.clone();
+                let next_c         = next_btn.clone();
+                let pagination_c   = pagination_box.clone();
+                *render_fn.borrow_mut() = Box::new(move || {
+                    // Clear current cards
+                    while let Some(child) = content_c.first_child() {
+                        content_c.remove(&child);
+                    }
+                    let all   = reviews_c.borrow();
+                    let total = all.len();
+                    let page  = *page_c.borrow();
+                    let start = page * REVIEWS_PER_PAGE;
+                    let end   = (start + REVIEWS_PER_PAGE).min(total);
+                    for review in &all[start..end] {
+                        content_c.append(&build_review_row(review));
+                    }
+                    let total_pages = total.saturating_sub(1) / REVIEWS_PER_PAGE + 1;
+                    if total > REVIEWS_PER_PAGE {
+                        page_lbl_c.set_label(&format!("Page {} of {}", page + 1, total_pages));
+                        prev_c.set_sensitive(page > 0);
+                        next_c.set_sensitive(page + 1 < total_pages);
+                        pagination_c.set_visible(true);
+                    }
+                });
+
+                // Render the first page
+                render_fn.borrow()();
 
                 glib::ControlFlow::Break
             }

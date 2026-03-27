@@ -128,6 +128,8 @@ Item {
     property var reviews: []
     property bool reviewsLoading: false
     property bool reviewsLoaded: false
+    property int reviewsPage: 0
+    readonly property int reviewsPerPage: 10
 
     property bool installing: false     // main app op in progress
     property string activeAddonId: ""   // addon id currently being installed/removed
@@ -173,6 +175,7 @@ Item {
         reviewsLoading = true;
         reviewsLoaded  = false;
         reviews = [];
+        reviewsPage = 0;
         backend.loadReviews(app.id);
         reviewsPollTimer.start();
     }
@@ -691,7 +694,10 @@ Item {
 
                     // Review cards
                     Repeater {
-                        model: detailPage.reviews.slice(0, 10)
+                        model: detailPage.reviews.slice(
+                            detailPage.reviewsPage * detailPage.reviewsPerPage,
+                            (detailPage.reviewsPage + 1) * detailPage.reviewsPerPage
+                        )
 
                         Rectangle {
                             width: parent.width
@@ -790,12 +796,35 @@ Item {
                         }
                     }
 
-                    // "Show all" hint when capped at 10
-                    Label {
-                        text: "Showing 10 of " + detailPage.reviews.length + " reviews"
-                        font.pixelSize: 11
-                        color: root.dimText
-                        visible: detailPage.reviews.length > 10
+                    // Pagination controls (shown only when there is more than one page)
+                    RowLayout {
+                        width: parent.width
+                        visible: detailPage.reviews.length > detailPage.reviewsPerPage
+
+                        Button {
+                            text: "← Previous"
+                            enabled: detailPage.reviewsPage > 0
+                            onClicked: detailPage.reviewsPage--
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        Label {
+                            text: {
+                                var total = Math.ceil(detailPage.reviews.length / detailPage.reviewsPerPage);
+                                return "Page " + (detailPage.reviewsPage + 1) + " of " + total;
+                            }
+                            font.pixelSize: 12
+                            color: root.dimText
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        Button {
+                            text: "Next →"
+                            enabled: (detailPage.reviewsPage + 1) * detailPage.reviewsPerPage < detailPage.reviews.length
+                            onClicked: detailPage.reviewsPage++
+                        }
                     }
                 }
 
