@@ -4623,6 +4623,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rakuos-reviews"
+version = "1.0.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tokio",
+]
+
+[[package]]
 name = "rakuos-software-cosmic"
 version = "1.0.0"
 dependencies = [
@@ -4677,6 +4688,7 @@ dependencies = [
  "rakuos-flatpak",
  "rakuos-home",
  "rakuos-packages",
+ "rakuos-reviews",
  "rakuos-updates",
  "rakuos-webapps",
  "serde_json",
@@ -4698,6 +4710,7 @@ dependencies = [
  "rakuos-flatpak",
  "rakuos-home",
  "rakuos-packages",
+ "rakuos-reviews",
  "rakuos-updates",
  "rakuos-webapps",
  "regex",
@@ -5324,6 +5337,17 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

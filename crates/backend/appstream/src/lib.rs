@@ -260,6 +260,42 @@ fn dedup_prefer_gz(files: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Scan `/var/lib/flatpak/app/<app_id>/x86_64/stable/*/files/share/app-info/icons/flatpak/`
+/// for `<app_id>.desktop.png` or `<app_id>.png` in any size directory.
+/// The deploy hash subdirectory changes per install so we enumerate it.
+fn find_flatpak_app_icon(app_id: &str) -> Option<String> {
+    // Flatpak deploy dirs use the bare ID (no .desktop suffix)
+    let bare_id = app_id.trim_end_matches(".desktop");
+    let deploy_base = format!("/var/lib/flatpak/app/{}/x86_64/stable", bare_id);
+    let deploy_dir = Path::new(&deploy_base);
+    if !deploy_dir.exists() {
+        return None;
+    }
+    let Ok(hashes) = std::fs::read_dir(deploy_dir) else { return None };
+    for hash_entry in hashes.flatten() {
+        let icon_base = hash_entry.path()
+            .join("files/share/app-info/icons/flatpak");
+        if !icon_base.exists() {
+            continue;
+        }
+        let Ok(sizes) = std::fs::read_dir(&icon_base) else { continue };
+        for size_entry in sizes.flatten() {
+            let size_dir = size_entry.path();
+            // Try <id>.desktop.png first, then plain <id>.png
+            for filename in &[
+                format!("{}.desktop.png", app_id),
+                format!("{}.png", app_id),
+            ] {
+                let p = size_dir.join(filename);
+                if p.exists() {
+                    return Some(p.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Resolve the local icon path for an app, checking all icon dirs.
 /// Returns empty string if not found.
 pub fn resolve_icon_path(app: &AppInfo, home_icon_cache: &str, terra_dirs: &[String]) -> String {
@@ -278,6 +314,11 @@ pub fn resolve_icon_path(app: &AppInfo, home_icon_cache: &str, terra_dirs: &[Str
             if Path::new(p).exists() {
                 return p.clone();
             }
+        }
+        // Check per-app deploy directory (handles apps not yet in appstream cache,
+        // e.g. freshly installed or with .desktop.png suffix like EasyEffects)
+        if let Some(p) = find_flatpak_app_icon(app_id) {
+            return p;
         }
         // Check home icon cache (downloaded from Flathub API)
         if !home_icon_cache.is_empty() {
@@ -561,7 +602,9 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                                     // and preserve flatpak under its own key.
                                     let app_id = app.id.clone();
                                     let ex = apps.get_mut(&app_id).unwrap();
-                                    if ex.screenshots.is_empty() && !app.screenshots.is_empty() {
+                                    // Always prefer flatpak screenshots (Flathub CDN reliable;
+                                    // Fedora swcatalog screenshots often have encoding issues).
+                                    if !app.screenshots.is_empty() {
                                         ex.screenshots = app.screenshots.clone();
                                     }
                                     if ex.icon.is_empty() && !app.icon.is_empty() {

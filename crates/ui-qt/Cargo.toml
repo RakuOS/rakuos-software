@@ -23,6 +23,7 @@ rakuos-webapps   = { workspace = true }
 rakuos-appimages = { workspace = true }
 rakuos-firmware  = { workspace = true }
 rakuos-home      = { workspace = true }
+rakuos-reviews   = { workspace = true }
 reqwest = { workspace = true }
 qmetaobject = "0.2"
 regex = "1"

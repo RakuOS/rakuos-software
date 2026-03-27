@@ -215,9 +215,21 @@ pub fn get_installed_flatpaks_enriched() -> Result<Vec<NativeApp>> {
 
     let mut results: Vec<NativeApp> = Vec::new();
     for (app_id, name, version, summary, origin) in &installed_fp {
-        if let Some(meta) = appstream.get(app_id.as_str()) {
+        // flatpak list returns IDs without .desktop suffix, but AppStream may
+        // store them differently. Try multiple key variants, always preferring
+        // a flatpak-sourced entry (native entries with the same ID are re-keyed
+        // to "flatpak:<id>" by parse_catalog_file when both sources exist).
+        let desktop_id = format!("{}.desktop", app_id);
+        let meta = appstream.get(app_id.as_str()).filter(|m| m.source == "flatpak")
+            .or_else(|| appstream.get(&format!("flatpak:{}", app_id)))
+            .or_else(|| appstream.get(&format!("flatpak:{}", desktop_id)))
+            .or_else(|| appstream.get(&desktop_id).filter(|m| m.source == "flatpak"));
+        if let Some(meta) = meta {
             let mut app = NativeApp::from(meta);
             app.installed = true;
+            // Use the real flatpak ID (without .desktop) so install/remove work
+            app.id = app_id.clone();
+            app.package_name = app_id.clone();
             if !version.is_empty() {
                 app.version = version.clone();
             }
@@ -370,6 +382,16 @@ pub fn get_app_by_id(app_id: &str) -> Result<Option<NativeApp>> {
     // Build sources list for the detail page install-source dropdown
     app.sources = build_sources(&app, app_id, &appstream, &installed_rpm, &installed_fp);
 
+    // Prefer flatpak screenshots for native apps — Flathub CDN is reliable,
+    // Fedora swcatalog screenshots often have encoding/format issues.
+    if app.source != "flatpak" {
+        if let Some(fp_src) = app.sources.iter().find(|s| s.source == "flatpak") {
+            if !fp_src.screenshots.is_empty() {
+                app.screenshots = fp_src.screenshots.clone();
+            }
+        }
+    }
+
     Ok(Some(app))
 }
 
@@ -489,8 +511,11 @@ fn merge_multi_source(apps: Vec<NativeApp>) -> HashMap<String, NativeApp> {
         sources.push(source_option_from_native_app(&primary));
         for alt in &group {
             sources.push(source_option_from_native_app(alt));
-            // Borrow screenshots/description from flatpak if primary lacks them
-            if primary.screenshots.is_empty() && !alt.screenshots.is_empty() {
+            // Always prefer flatpak screenshots — Flathub CDN is reliable,
+            // Fedora swcatalog screenshots often have encoding/format issues.
+            if alt.source == "flatpak" && !alt.screenshots.is_empty() {
+                primary.screenshots = alt.screenshots.clone();
+            } else if primary.screenshots.is_empty() && !alt.screenshots.is_empty() {
                 primary.screenshots = alt.screenshots.clone();
             }
             if primary.description.is_empty() && !alt.description.is_empty() {

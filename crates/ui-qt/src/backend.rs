@@ -9,6 +9,18 @@ use std::sync::Arc;
 // ── Cache readiness flag (set by warmCache thread) ───────────────────────────
 static CACHE_READY: AtomicBool = AtomicBool::new(false);
 
+// ── Reviews async state (separate from main op so they don't conflict) ────────
+static REVIEWS_RUNNING: AtomicBool = AtomicBool::new(false);
+static REVIEW_SUBMIT_RUNNING: AtomicBool = AtomicBool::new(false);
+
+fn reviews_log_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rakuos-reviews.json")
+}
+
+fn review_submit_log_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rakuos-review-submit.json")
+}
+
 // ── Shared async state ────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -28,19 +40,7 @@ fn settings_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".config/rakuos/software-settings.json")
 }
 
-fn screenshot_cache_path(url: &str) -> std::path::PathBuf {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut hasher);
-    let hash = hasher.finish();
-    let ext = url.rsplit('.').next()
-        .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
-        .unwrap_or("png");
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home)
-        .join(".cache/rakuos/screenshots")
-        .join(format!("{:016x}.{}", hash, ext))
-}
+
 
 fn show_flag_path() -> std::path::PathBuf {
     std::env::temp_dir().join("rakuos-software-show")
@@ -226,36 +226,6 @@ pub struct SoftwareBackend {
 
     // ── Screenshot download / cache ───────────────────────────────────────────
 
-    /// Start downloading a screenshot URL to the local cache (no-op if already cached).
-    fetchScreenshot: qt_method!(fn fetchScreenshot(&mut self, url: QString) {
-        let url = url.to_string();
-        if url.is_empty() { return; }
-        let dest = screenshot_cache_path(&url);
-        if dest.exists() { return; }   // already cached
-        std::thread::spawn(move || {
-            if let Some(parent) = dest.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                if let Ok(resp) = reqwest::get(&url).await {
-                    if let Ok(bytes) = resp.bytes().await {
-                        let _ = std::fs::write(&dest, bytes);
-                    }
-                }
-            });
-        });
-    }),
-
-    /// Return "file://<local_path>" if the screenshot is cached, otherwise "".
-    screenshotLocalPath: qt_method!(fn screenshotLocalPath(&mut self, url: QString) -> QString {
-        let p = screenshot_cache_path(&url.to_string());
-        if p.exists() {
-            QString::from(format!("file://{}", p.display()))
-        } else {
-            QString::from("")
-        }
-    }),
 
     // ── Add-ons lookup (sync — appstream cache is already in memory) ──────────
 
@@ -807,6 +777,79 @@ pub struct SoftwareBackend {
         std::fs::read_to_string(daemon_cache_path())
             .unwrap_or_default()
             .into()
+    }),
+
+    // ── ODRS Reviews ──────────────────────────────────────────────────────────
+
+    /// Start fetching ODRS reviews for app_id in a background thread.
+    loadReviews: qt_method!(fn loadReviews(&mut self, app_id: QString) {
+        let app_id = app_id.to_string();
+        REVIEWS_RUNNING.store(true, Ordering::Relaxed);
+        let _ = std::fs::write(reviews_log_path(), "[]");
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let reviews = rt.block_on(rakuos_reviews::get_reviews(&app_id));
+            let json = serde_json::to_string(&reviews).unwrap_or_else(|_| "[]".into());
+            let _ = std::fs::write(reviews_log_path(), json);
+            REVIEWS_RUNNING.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    /// Returns true while reviews are being fetched.
+    reviewsRunning: qt_method!(fn reviewsRunning(&mut self) -> bool {
+        REVIEWS_RUNNING.load(Ordering::Relaxed)
+    }),
+
+    /// Read the cached reviews JSON (array of Review objects).
+    readReviews: qt_method!(fn readReviews(&mut self) -> QString {
+        std::fs::read_to_string(reviews_log_path())
+            .unwrap_or_else(|_| "[]".into())
+            .into()
+    }),
+
+    /// Submit a review asynchronously.  Poll reviewSubmitRunning(); when false
+    /// call readReviewSubmitResult() for {"ok":bool,"msg":string}.
+    submitReview: qt_method!(fn submitReview(
+        &mut self,
+        app_id: QString, summary: QString,
+        description: QString, rating: i32, version: QString,
+        display_name: QString
+    ) {
+        let app_id       = app_id.to_string();
+        let summary      = summary.to_string();
+        let description  = description.to_string();
+        let version      = version.to_string();
+        let display_name = display_name.to_string();
+        let user_display: Option<String> = if display_name.is_empty() { None } else { Some(display_name) };
+        REVIEW_SUBMIT_RUNNING.store(true, Ordering::Relaxed);
+        let _ = std::fs::write(review_submit_log_path(), "");
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(rakuos_reviews::submit_review(
+                &app_id, &summary, &description, rating, &version, user_display.as_deref(),
+            ));
+            let json = match result {
+                Ok(())   => serde_json::json!({"ok": true,  "msg": "Review submitted — thank you!"}).to_string(),
+                Err(msg) => serde_json::json!({"ok": false, "msg": msg}).to_string(),
+            };
+            let _ = std::fs::write(review_submit_log_path(), json);
+            REVIEW_SUBMIT_RUNNING.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    reviewSubmitRunning: qt_method!(fn reviewSubmitRunning(&mut self) -> bool {
+        REVIEW_SUBMIT_RUNNING.load(Ordering::Relaxed)
+    }),
+
+    readReviewSubmitResult: qt_method!(fn readReviewSubmitResult(&mut self) -> QString {
+        std::fs::read_to_string(review_submit_log_path())
+            .unwrap_or_default()
+            .into()
+    }),
+
+    /// Vote on a review — fire and forget.
+    voteReview: qt_method!(fn voteReview(&mut self, review_id: i32, upvote: bool) {
+        rakuos_reviews::vote_review(review_id as i64, upvote);
     }),
 }
 

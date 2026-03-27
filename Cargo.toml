@@ -8,6 +8,7 @@ members = [
     "crates/backend/appimages",
     "crates/backend/firmware",
     "crates/backend/home",
+    "crates/backend/reviews",
     "crates/ui-gtk",
     "crates/ui-qt",
     "crates/ui-cosmic",
@@ -40,3 +41,4 @@ rakuos-webapps   = { path = "crates/backend/webapps" }
 rakuos-appimages = { path = "crates/backend/appimages" }
 rakuos-firmware  = { path = "crates/backend/firmware" }
 rakuos-home      = { path = "crates/backend/home" }
+rakuos-reviews   = { path = "crates/backend/reviews" }

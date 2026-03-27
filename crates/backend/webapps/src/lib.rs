@@ -41,6 +41,7 @@ pub struct WebApp {
     pub summary: String,
     pub description: String,
     pub icon_path: String,
+    #[serde(default)] pub icon_url: String,
     #[serde(default)] pub categories: Vec<String>,
     #[serde(default)] pub keywords: Vec<String>,
     #[serde(default)] pub screenshots: Vec<String>,
@@ -61,6 +62,7 @@ impl Default for WebApp {
             summary: String::new(),
             description: String::new(),
             icon_path: String::new(),
+            icon_url: String::new(),
             categories: Vec::new(),
             keywords: Vec::new(),
             screenshots: Vec::new(),
@@ -279,6 +281,7 @@ fn parse_webapp(
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
         icon_path: String::new(),
+        icon_url: String::new(),
         source: "webapp".to_string(),
         installed: false,
     };
@@ -296,9 +299,8 @@ fn parse_webapp(
         }
     }
 
-    // icon_url stored separately for download resolution
     if let Some(icon_url) = v["icon_url"].as_str() {
-        app.icon_path = icon_url.to_string(); // temporary — resolved in finalise
+        app.icon_url = icon_url.to_string();
     }
 
     app
@@ -316,9 +318,8 @@ fn resolve_icon(app: &WebApp) -> String {
     if cached.exists() {
         return cached.to_string_lossy().to_string();
     }
-    // icon_path holds the icon_url temporarily before install
-    if !app.icon_path.is_empty() && app.icon_path.starts_with("http") {
-        if let Ok(bytes) = download_bytes(&app.icon_path) {
+    if !app.icon_url.is_empty() {
+        if let Ok(bytes) = download_bytes(&app.icon_url) {
             let _ = ensure_dirs();
             let _ = std::fs::write(&cached, bytes);
             if cached.exists() {

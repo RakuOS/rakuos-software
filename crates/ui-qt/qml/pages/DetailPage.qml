@@ -13,6 +13,11 @@ Item {
         app = appData;
         screenshotIndex = 0;
 
+        // Reset reviews state for this app
+        reviews = [];
+        reviewsLoading = false;
+        reviewsLoaded  = false;
+
         // Default: RakuOS Linux (index 0, always native).
         // Exception: if native is NOT installed but another source IS, select that source.
         // If both are installed, prefer RakuOS Linux (index 0).
@@ -31,10 +36,11 @@ Item {
         _reloadScreenshots();
         _loadAddons();
 
-        // Fetch full record for native/flatpak apps to get multi-source data.
-        // Webapps and appimages carry complete data from the listing already.
         var src = app ? (app.source || "") : "";
         if (app && app.id && src !== "webapp" && src !== "appimage") {
+            // Start reviews immediately — we already have the app id
+            _loadReviews();
+            // Fetch full record for multi-source data
             backend.loadAppById(app.id);
             detailFetchTimer.start();
         }
@@ -54,7 +60,6 @@ Item {
         for (var i = 0; i < Math.min(shots.length, 8); i++) {
             screenshotModel.append({ url: shots[i] });
         }
-        _loadCurrentShot();
     }
 
     // Computed display object: merges selected source's content fields over the
@@ -119,47 +124,11 @@ Item {
     }
 
     property int screenshotIndex: 0
-    property string localShotPath: ""
-    property bool shotTimedOut: false
     property var addons: []
+    property var reviews: []
+    property bool reviewsLoading: false
+    property bool reviewsLoaded: false
 
-    // ── Screenshot download / poll ─────────────────────────────────────────────
-    function _loadCurrentShot() {
-        localShotPath = "";
-        shotTimedOut  = false;
-        shotPollTimer.attempts = 0;
-        if (screenshotModel.count === 0) return;
-        var url = screenshotModel.get(screenshotIndex).url;
-        if (!url) return;
-        var p = backend.screenshotLocalPath(url);
-        if (p !== "") { localShotPath = p; return; }
-        backend.fetchScreenshot(url);
-        shotPollTimer.restart();
-    }
-
-    onScreenshotIndexChanged: _loadCurrentShot()
-
-    Timer {
-        id: shotPollTimer
-        interval: 300
-        repeat: true
-        property int attempts: 0
-        onTriggered: {
-            if (screenshotModel.count === 0) { stop(); return; }
-            var url = screenshotModel.get(detailPage.screenshotIndex).url;
-            var p = backend.screenshotLocalPath(url || "");
-            if (p !== "") {
-                detailPage.localShotPath = p;
-                stop();
-            } else {
-                attempts++;
-                if (attempts > 30) { // ~9 s timeout
-                    detailPage.shotTimedOut = true;
-                    stop();
-                }
-            }
-        }
-    }
     property bool installing: false     // main app op in progress
     property string activeAddonId: ""   // addon id currently being installed/removed
 
@@ -199,6 +168,58 @@ Item {
         } catch(e) { addons = []; }
     }
 
+    function _loadReviews() {
+        if (!app || !app.id) return;
+        reviewsLoading = true;
+        reviewsLoaded  = false;
+        reviews = [];
+        backend.loadReviews(app.id);
+        reviewsPollTimer.start();
+    }
+
+    Timer {
+        id: reviewsPollTimer
+        interval: 400
+        repeat: true
+        onTriggered: {
+            if (!backend.reviewsRunning()) {
+                stop();
+                detailPage.reviewsLoading = false;
+                detailPage.reviewsLoaded  = true;
+                try { detailPage.reviews = JSON.parse(backend.readReviews()) || []; }
+                catch(e) { detailPage.reviews = []; }
+            }
+        }
+    }
+
+    Timer {
+        id: submitPollTimer
+        interval: 300
+        repeat: true
+        onTriggered: {
+            if (!backend.reviewSubmitRunning()) {
+                stop();
+                submitBusy = false;
+                try {
+                    var r = JSON.parse(backend.readReviewSubmitResult());
+                    submitResultMsg   = r.msg  || "";
+                    submitResultOk    = r.ok   === true;
+                } catch(e) {
+                    submitResultMsg = "Unknown error.";
+                    submitResultOk  = false;
+                }
+                if (submitResultOk) {
+                    // Reload reviews to show the new one
+                    detailPage._loadReviews();
+                }
+            }
+        }
+    }
+
+    property bool submitBusy: false
+    property string submitResultMsg: ""
+    property bool submitResultOk: false
+
     ListModel { id: screenshotModel }
 
     ColumnLayout {
@@ -221,13 +242,7 @@ Item {
                     onClicked: detailPage.backRequested()
                 }
 
-                Label {
-                    text: app ? (app.name || "") : ""
-                    font.pixelSize: 15
-                    font.bold: true
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
+                Item { Layout.fillWidth: true }
 
                 // Launch button — webapps only, when installed
                 Button {
@@ -349,6 +364,32 @@ Item {
                                 Layout.fillWidth: true
                             }
 
+                            // Aggregate rating — shown once reviews have loaded
+                            Row {
+                                spacing: 6
+                                visible: detailPage.reviews.length > 0
+                                Label {
+                                    text: {
+                                        var sum = 0;
+                                        for (var i = 0; i < detailPage.reviews.length; i++)
+                                            sum += detailPage.reviews[i].rating || 0;
+                                        var avg = sum / detailPage.reviews.length / 20.0;
+                                        var full = Math.round(avg);
+                                        var s = "";
+                                        for (var j = 0; j < 5; j++) s += j < full ? "★" : "☆";
+                                        return s;
+                                    }
+                                    color: "#f5a623"
+                                    font.pixelSize: 15
+                                }
+                                Label {
+                                    text: "(" + detailPage.reviews.length + ")"
+                                    font.pixelSize: 12
+                                    color: root.dimText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
                             Label {
                                 text: displayApp ? (displayApp.summary || "") : ""
                                 font.pixelSize: 13
@@ -427,25 +468,26 @@ Item {
                         id: mainShot
                         anchors { left: parent.left; right: parent.right; top: parent.top; margins: 28 }
                         height: 280
-                        source: detailPage.localShotPath
+                        source: screenshotModel.count > 0 ? screenshotModel.get(detailPage.screenshotIndex).url : ""
                         fillMode: Image.PreserveAspectFit
                         smooth: true
                         clip: true
+                        asynchronous: true
                     }
 
-                    // Loading / error overlay (shown while downloading or on timeout)
+                    // Loading / error overlay
                     Rectangle {
                         anchors { left: parent.left; right: parent.right; top: parent.top; margins: 28 }
                         height: 280
-                        visible: detailPage.localShotPath === ""
+                        visible: mainShot.status !== Image.Ready
                         color: Qt.rgba(0.5, 0.5, 0.5, 0.08)
                         radius: 4
                         border.color: palette.mid; border.width: 1
 
                         BusyIndicator {
                             anchors.centerIn: parent
-                            running: !detailPage.shotTimedOut
-                            visible: !detailPage.shotTimedOut
+                            running: mainShot.status === Image.Loading
+                            visible: mainShot.status === Image.Loading
                             implicitWidth: 32; implicitHeight: 32
                         }
                         Label {
@@ -453,7 +495,7 @@ Item {
                             text: "Screenshot unavailable"
                             color: root.dimText
                             font.pixelSize: 12
-                            visible: detailPage.shotTimedOut
+                            visible: mainShot.status === Image.Error || mainShot.status === Image.Null
                         }
                     }
 
@@ -574,6 +616,186 @@ Item {
                                 Label { text: modelData.value; font.pixelSize: 11; elide: Text.ElideRight; width: parent.width }
                             }
                         }
+                    }
+                }
+
+                Item { width: 1; height: 24 }
+
+                // ── Reviews ───────────────────────────────────────────────────
+                Column {
+                    width: parent.width - 56
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 12
+                    visible: app != null && (app.source || "") !== "webapp"
+                             && (app.source || "") !== "appimage"
+
+                    // Header row: title + aggregate + Write Review button
+                    RowLayout {
+                        width: parent.width
+                        spacing: 12
+
+                        Label {
+                            text: "Reviews"
+                            font.pixelSize: 15
+                            font.bold: true
+                            Layout.fillWidth: true
+                        }
+
+                        // Aggregate stars + count
+                        Row {
+                            spacing: 4
+                            visible: detailPage.reviews.length > 0
+                            Label {
+                                text: {
+                                    if (detailPage.reviews.length === 0) return "";
+                                    var sum = 0;
+                                    for (var i = 0; i < detailPage.reviews.length; i++)
+                                        sum += detailPage.reviews[i].rating || 0;
+                                    var avg = sum / detailPage.reviews.length / 20.0; // 1-5
+                                    var full = Math.round(avg);
+                                    var s = "";
+                                    for (var j = 0; j < 5; j++) s += j < full ? "★" : "☆";
+                                    return s;
+                                }
+                                color: "#f5a623"
+                                font.pixelSize: 14
+                            }
+                            Label {
+                                text: "(" + detailPage.reviews.length + ")"
+                                font.pixelSize: 12
+                                color: root.dimText
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        BusyIndicator {
+                            running: detailPage.reviewsLoading
+                            visible: detailPage.reviewsLoading
+                            implicitWidth: 20; implicitHeight: 20
+                        }
+
+                        Button {
+                            text: "Write Review"
+                            visible: !detailPage.reviewsLoading
+                            onClicked: writeReviewDialog.open()
+                        }
+                    }
+
+                    // Empty state
+                    Label {
+                        text: "No reviews yet — be the first!"
+                        color: root.dimText
+                        font.pixelSize: 12
+                        visible: detailPage.reviewsLoaded && detailPage.reviews.length === 0
+                    }
+
+                    // Review cards
+                    Repeater {
+                        model: detailPage.reviews.slice(0, 10)
+
+                        Rectangle {
+                            width: parent.width
+                            height: reviewCol.implicitHeight + 24
+                            radius: 8
+                            color: palette.button
+                            border.color: palette.mid
+                            border.width: 1
+
+                            Column {
+                                id: reviewCol
+                                anchors { fill: parent; margins: 12 }
+                                spacing: 6
+
+                                // Star + summary row
+                                RowLayout {
+                                    width: parent.width
+                                    spacing: 8
+
+                                    Label {
+                                        text: {
+                                            var stars = Math.max(1, Math.min(5, Math.round((modelData.rating || 0) / 20)));
+                                            var s = "";
+                                            for (var i = 0; i < 5; i++) s += i < stars ? "★" : "☆";
+                                            return s;
+                                        }
+                                        color: "#f5a623"
+                                        font.pixelSize: 13
+                                    }
+
+                                    Label {
+                                        text: modelData.summary || ""
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                }
+
+                                Label {
+                                    text: modelData.description || ""
+                                    font.pixelSize: 12
+                                    color: palette.text
+                                    wrapMode: Text.WordWrap
+                                    width: parent.width
+                                    visible: text !== ""
+                                }
+
+                                // Footer: author + karma votes
+                                RowLayout {
+                                    width: parent.width
+                                    spacing: 8
+
+                                    Label {
+                                        text: modelData.user_display || "Anonymous"
+                                        font.pixelSize: 10
+                                        color: root.dimText
+                                        Layout.fillWidth: true
+                                    }
+
+                                    Label {
+                                        text: modelData.version ? "v" + modelData.version : ""
+                                        font.pixelSize: 10
+                                        color: root.dimText
+                                        visible: text !== ""
+                                    }
+
+                                    // Thumbs up/down
+                                    Row {
+                                        spacing: 4
+                                        Button {
+                                            flat: true
+                                            implicitWidth: 52; implicitHeight: 24
+                                            contentItem: Label {
+                                                text: "👍 " + (modelData.karma_up || 0)
+                                                font.pixelSize: 11
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+                                            onClicked: backend.voteReview(modelData.review_id, true)
+                                        }
+                                        Button {
+                                            flat: true
+                                            implicitWidth: 52; implicitHeight: 24
+                                            contentItem: Label {
+                                                text: "👎 " + (modelData.karma_down || 0)
+                                                font.pixelSize: 11
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+                                            onClicked: backend.voteReview(modelData.review_id, false)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // "Show all" hint when capped at 10
+                    Label {
+                        text: "Showing 10 of " + detailPage.reviews.length + " reviews"
+                        font.pixelSize: 11
+                        color: root.dimText
+                        visible: detailPage.reviews.length > 10
                     }
                 }
 
@@ -866,6 +1088,154 @@ Item {
                         horizontalAlignment: Text.AlignHCenter
                         topPadding: 24; bottomPadding: 24
                         visible: detailPage.addons.length === 0
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Write Review dialog ───────────────────────────────────────────────────
+    Dialog {
+        id: writeReviewDialog
+        title: "Write a Review"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(480, detailPage.width - 48)
+        standardButtons: Dialog.NoButton
+
+        onOpened: {
+            reviewDisplayNameField.text = "";
+            reviewSummaryField.text     = "";
+            reviewDescField.text        = "";
+            reviewStarValue             = 4;
+            detailPage.submitResultMsg  = "";
+        }
+
+        property int reviewStarValue: 4
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+
+            // Display name
+            RowLayout {
+                spacing: 4
+                Layout.fillWidth: true
+                Label { text: "Your name:"; font.pixelSize: 12; color: root.dimText; Layout.preferredWidth: 70 }
+                TextField {
+                    id: reviewDisplayNameField
+                    Layout.fillWidth: true
+                    placeholderText: "Optional — leave blank to post as Anonymous"
+                    font.pixelSize: 12
+                    maximumLength: 60
+                }
+            }
+
+            // Disclaimer
+            Label {
+                text: "Reviews are shared publicly with other Linux software centers (GNOME Software, KDE Discover, etc.) via the Open Desktop Ratings Service. Your username and IP address are never stored — only a one-way hash is used to prevent duplicate reviews."
+                font.pixelSize: 10
+                color: root.dimText
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: palette.mid; opacity: 0.3 }
+
+            // Star picker
+            RowLayout {
+                spacing: 4
+                Label { text: "Rating:"; font.pixelSize: 12; color: root.dimText; Layout.preferredWidth: 70 }
+                Repeater {
+                    model: 5
+                    Label {
+                        text: index < writeReviewDialog.reviewStarValue ? "★" : "☆"
+                        font.pixelSize: 22
+                        color: "#f5a623"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: writeReviewDialog.reviewStarValue = index + 1
+                        }
+                    }
+                }
+            }
+
+            // Summary
+            RowLayout {
+                spacing: 4
+                Layout.fillWidth: true
+                Label { text: "Summary:"; font.pixelSize: 12; color: root.dimText; Layout.preferredWidth: 70 }
+                TextField {
+                    id: reviewSummaryField
+                    Layout.fillWidth: true
+                    placeholderText: "One-line summary"
+                    font.pixelSize: 12
+                    maximumLength: 80
+                }
+            }
+
+            // Description
+            Label { text: "Review:"; font.pixelSize: 12; color: root.dimText }
+            ScrollView {
+                Layout.fillWidth: true
+                height: 100
+                TextArea {
+                    id: reviewDescField
+                    placeholderText: "Tell others what you think…"
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            // Submit result
+            Label {
+                text: detailPage.submitResultMsg
+                color: detailPage.submitResultOk ? "#4caf50" : "#e53935"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+                visible: detailPage.submitResultMsg !== "" && !detailPage.submitBusy
+            }
+
+            // Buttons
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Button {
+                    text: "Cancel"
+                    onClicked: writeReviewDialog.close()
+                    enabled: !detailPage.submitBusy
+                }
+
+                Item { Layout.fillWidth: true }
+
+                BusyIndicator {
+                    running: detailPage.submitBusy
+                    visible: detailPage.submitBusy
+                    implicitWidth: 28; implicitHeight: 28
+                }
+
+                Button {
+                    text: "Submit"
+                    highlighted: true
+                    enabled: !detailPage.submitBusy
+                            && reviewSummaryField.text.trim() !== ""
+                            && reviewDescField.text.trim() !== ""
+                    onClicked: {
+                        if (!detailPage.app) return;
+                        detailPage.submitBusy      = true;
+                        detailPage.submitResultMsg = "";
+                        backend.submitReview(
+                            detailPage.app.id || "",
+                            reviewSummaryField.text.trim(),
+                            reviewDescField.text.trim(),
+                            writeReviewDialog.reviewStarValue * 20,
+                            (detailPage.displayApp && detailPage.displayApp.version) || "",
+                            reviewDisplayNameField.text.trim()
+                        );
+                        submitPollTimer.start();
                     }
                 }
             }
