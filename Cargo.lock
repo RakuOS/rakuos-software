@@ -4701,6 +4701,7 @@ dependencies = [
  "rakuos-updates",
  "rakuos-webapps",
  "regex",
+ "reqwest",
  "serde_json",
  "tokio",
 ]

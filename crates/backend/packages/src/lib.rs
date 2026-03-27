@@ -373,6 +373,50 @@ pub fn get_app_by_id(app_id: &str) -> Result<Option<NativeApp>> {
     Ok(Some(app))
 }
 
+/// Return all add-ons for a given app filtered by source type.
+///
+/// - `source_type == "flatpak"`: returns all Flatpak add-ons extending `app_id`,
+///   regardless of which remote they come from (a Flatpak add-on from any remote
+///   can work with any Flatpak install of the same app).
+/// - anything else (native/terra/rpm): returns only non-Flatpak add-ons extending
+///   `app_id`; RPM add-ons cannot work inside a Flatpak sandbox and vice versa.
+pub fn get_addons_for_app(app_id: &str, source_type: &str) -> Result<Vec<serde_json::Value>> {
+    let appstream = get_appstream();
+    let installed_fp = get_installed_flatpaks();
+    let installed_rpm = get_installed_packages()?;
+    let is_flatpak_source = source_type == "flatpak";
+
+    let mut addons: Vec<serde_json::Value> = appstream
+        .values()
+        .filter(|a| {
+            if !a.is_addon || a.extends != app_id { return false; }
+            // Match add-on source to the selected source type
+            if is_flatpak_source { a.source == "flatpak" } else { a.source != "flatpak" }
+        })
+        .map(|a| {
+            let installed = if a.source == "flatpak" {
+                installed_fp.contains(&a.id)
+            } else {
+                installed_rpm.contains(&a.package_name)
+            };
+            serde_json::json!({
+                "id":           a.id,
+                "name":         a.name,
+                "summary":      a.summary,
+                "source":       a.source,
+                "package_name": a.package_name,
+                "installed":    installed,
+            })
+        })
+        .collect();
+
+    addons.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    Ok(addons)
+}
+
 /// Build a `SourceOption` from a `NativeApp`, carrying its full display data.
 fn source_option_from_native_app(app: &NativeApp) -> SourceOption {
     let remote = if app.source == "flatpak" { "flathub" } else { "" };
@@ -726,15 +770,18 @@ fn get_installed_flatpaks_with_info() -> Vec<(String, String, String, String, St
 }
 
 fn run_rakuos_stream(args: &[&str]) -> impl Iterator<Item = String> {
-    let mut cmd_args = vec!["rakuos"];
-    cmd_args.extend_from_slice(args);
+    // Build: sudo /usr/libexec/rakuos/rakuos-<subcommand> [rest of args]
+    // e.g. args = ["install", "firefox"] → sudo /usr/libexec/rakuos/rakuos-install firefox
+    let (subcmd, rest) = args.split_first().unwrap_or((&"", &[]));
+    let bin = format!("/usr/libexec/rakuos/rakuos-{}", subcmd);
 
-    let mut child = Command::new("pkexec")
-        .args(&cmd_args)
+    let mut child = Command::new("sudo")
+        .arg(&bin)
+        .args(rest)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("Failed to spawn pkexec");
+        .expect("Failed to spawn sudo rakuos");
 
     let stdout = child.stdout.take().unwrap();
     let lines: Vec<String> = BufReader::new(stdout)

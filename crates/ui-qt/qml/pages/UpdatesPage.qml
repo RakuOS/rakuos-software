@@ -330,9 +330,11 @@ Item {
 
                             Rectangle { width: parent.width; height: 1; color: palette.mid; opacity: 0.3 }
 
+                            // Normal row: icon + info + button (hidden while image updating)
                             RowLayout {
                                 width: parent.width
                                 spacing: 10
+                                visible: !(updating && activeUpdateType === "image")
 
                                 Label { text: "🖥"; font.pixelSize: 20 }
 
@@ -363,7 +365,7 @@ Item {
                                     id: imageUpdateBtn
                                     text: (updateData && updateData.image_info &&
                                            updateData.image_info.type === "switch") ? "Update" : "Apply Hotfix"
-                                    visible: !rebootRequired && activeUpdateType !== "image"
+                                    visible: !rebootRequired
                                     onClicked: {
                                         if (!updateData || !updateData.image_info) return;
                                         var info = updateData.image_info;
@@ -378,14 +380,36 @@ Item {
                                 }
                             }
 
-                            // Progress bar for image update
-                            ProgressBar {
+                            // In-progress state — shown instead of the button row
+                            Column {
                                 width: parent.width
-                                height: 6
+                                spacing: 8
                                 visible: updating && activeUpdateType === "image"
-                                from: 0; to: 100
-                                indeterminate: backend.opProgress === 0
-                                value: backend.opProgress
+
+                                RowLayout {
+                                    width: parent.width
+                                    spacing: 10
+
+                                    BusyIndicator {
+                                        running: true
+                                        implicitWidth: 24; implicitHeight: 24
+                                    }
+
+                                    Label {
+                                        text: "Applying system update…"
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                        Layout.fillWidth: true
+                                    }
+                                }
+
+                                ProgressBar {
+                                    width: parent.width
+                                    height: 10
+                                    from: 0; to: 100
+                                    indeterminate: backend.opProgress === 0
+                                    value: backend.opProgress
+                                }
                             }
                         }
                     }

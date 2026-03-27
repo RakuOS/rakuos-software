@@ -6,6 +6,9 @@ use qmetaobject::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
+// ── Cache readiness flag (set by warmCache thread) ───────────────────────────
+static CACHE_READY: AtomicBool = AtomicBool::new(false);
+
 // ── Shared async state ────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -23,6 +26,20 @@ fn log_path() -> std::path::PathBuf {
 fn settings_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     std::path::PathBuf::from(home).join(".config/rakuos/software-settings.json")
+}
+
+fn screenshot_cache_path(url: &str) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    let hash = hasher.finish();
+    let ext = url.rsplit('.').next()
+        .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or("png");
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home)
+        .join(".cache/rakuos/screenshots")
+        .join(format!("{:016x}.{}", hash, ext))
 }
 
 fn show_flag_path() -> std::path::PathBuf {
@@ -205,6 +222,50 @@ pub struct SoftwareBackend {
             shared.result.store(1, Ordering::Relaxed);
             shared.running.store(false, Ordering::Relaxed);
         });
+    }),
+
+    // ── Screenshot download / cache ───────────────────────────────────────────
+
+    /// Start downloading a screenshot URL to the local cache (no-op if already cached).
+    fetchScreenshot: qt_method!(fn fetchScreenshot(&mut self, url: QString) {
+        let url = url.to_string();
+        if url.is_empty() { return; }
+        let dest = screenshot_cache_path(&url);
+        if dest.exists() { return; }   // already cached
+        std::thread::spawn(move || {
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                if let Ok(resp) = reqwest::get(&url).await {
+                    if let Ok(bytes) = resp.bytes().await {
+                        let _ = std::fs::write(&dest, bytes);
+                    }
+                }
+            });
+        });
+    }),
+
+    /// Return "file://<local_path>" if the screenshot is cached, otherwise "".
+    screenshotLocalPath: qt_method!(fn screenshotLocalPath(&mut self, url: QString) -> QString {
+        let p = screenshot_cache_path(&url.to_string());
+        if p.exists() {
+            QString::from(format!("file://{}", p.display()))
+        } else {
+            QString::from("")
+        }
+    }),
+
+    // ── Add-ons lookup (sync — appstream cache is already in memory) ──────────
+
+    getAddons: qt_method!(fn getAddons(&mut self, app_id: QString, source_type: QString) -> QString {
+        let app_id = app_id.to_string();
+        let source_type = source_type.to_string();
+        match rakuos_packages::get_addons_for_app(&app_id, &source_type) {
+            Ok(addons) => QString::from(serde_json::to_string(&addons).unwrap_or_else(|_| "[]".into())),
+            Err(_) => QString::from("[]"),
+        }
     }),
 
     // ── Web App catalog ───────────────────────────────────────────────────────
@@ -449,8 +510,16 @@ pub struct SoftwareBackend {
                     (None, ok)
                 }
                 _ => {
-                    let c = Command::new("pkexec")
-                        .args(["rakuos", "install", &id])
+                    // Resolve AppStream ID → RPM package name
+                    let appstream = rakuos_appstream::get_appstream();
+                    let pkg = appstream.get(&id)
+                        .or_else(|| appstream.get(&format!("native:{}", id)))
+                        .map(|a| a.package_name.clone())
+                        .filter(|p| !p.is_empty())
+                        .unwrap_or_else(|| id.clone());
+                    drop(appstream);
+                    let c = Command::new("sudo")
+                        .args(["/usr/libexec/rakuos/rakuos-install", &pkg])
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
                         .spawn();
@@ -507,8 +576,16 @@ pub struct SoftwareBackend {
                     ok
                 }
                 _ => {
-                    let out = Command::new("pkexec")
-                        .args(["rakuos", "remove", &id])
+                    // Resolve AppStream ID → RPM package name
+                    let appstream = rakuos_appstream::get_appstream();
+                    let pkg = appstream.get(&id)
+                        .or_else(|| appstream.get(&format!("native:{}", id)))
+                        .map(|a| a.package_name.clone())
+                        .filter(|p| !p.is_empty())
+                        .unwrap_or_else(|| id.clone());
+                    drop(appstream);
+                    let out = Command::new("sudo")
+                        .args(["/usr/libexec/rakuos/rakuos-remove", &pkg])
                         .output()
                         .ok();
                     if let Some(o) = &out {
@@ -688,8 +765,13 @@ pub struct SoftwareBackend {
     warmCache: qt_method!(fn warmCache(&mut self) {
         std::thread::spawn(|| {
             let _ = rakuos_appstream::get_appstream();
+            CACHE_READY.store(true, Ordering::Release);
             log::info!("AppStream cache warmed.");
         });
+    }),
+
+    isCacheReady: qt_method!(fn isCacheReady(&mut self) -> bool {
+        CACHE_READY.load(Ordering::Acquire)
     }),
 
     // Check if the tray daemon wrote a "show window" flag.

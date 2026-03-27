@@ -29,6 +29,7 @@ Item {
         }
         sourceSelector.currentIndex = bestIdx;
         _reloadScreenshots();
+        _loadAddons();
 
         // Fetch full record for native/flatpak apps to get multi-source data.
         // Webapps and appimages carry complete data from the listing already.
@@ -53,6 +54,7 @@ Item {
         for (var i = 0; i < Math.min(shots.length, 8); i++) {
             screenshotModel.append({ url: shots[i] });
         }
+        _loadCurrentShot();
     }
 
     // Computed display object: merges selected source's content fields over the
@@ -96,8 +98,9 @@ Item {
                         var fullApp = JSON.parse(json);
                         if (fullApp && fullApp.id) {
                             detailPage.app = fullApp;
-                            // Reload screenshots — sources may now carry richer data
+                            // Reload screenshots and add-ons — sources now carry richer data
                             detailPage._reloadScreenshots();
+                            detailPage._loadAddons();
                         }
                     } catch(e) {}
                 }
@@ -116,6 +119,85 @@ Item {
     }
 
     property int screenshotIndex: 0
+    property string localShotPath: ""
+    property bool shotTimedOut: false
+    property var addons: []
+
+    // ── Screenshot download / poll ─────────────────────────────────────────────
+    function _loadCurrentShot() {
+        localShotPath = "";
+        shotTimedOut  = false;
+        shotPollTimer.attempts = 0;
+        if (screenshotModel.count === 0) return;
+        var url = screenshotModel.get(screenshotIndex).url;
+        if (!url) return;
+        var p = backend.screenshotLocalPath(url);
+        if (p !== "") { localShotPath = p; return; }
+        backend.fetchScreenshot(url);
+        shotPollTimer.restart();
+    }
+
+    onScreenshotIndexChanged: _loadCurrentShot()
+
+    Timer {
+        id: shotPollTimer
+        interval: 300
+        repeat: true
+        property int attempts: 0
+        onTriggered: {
+            if (screenshotModel.count === 0) { stop(); return; }
+            var url = screenshotModel.get(detailPage.screenshotIndex).url;
+            var p = backend.screenshotLocalPath(url || "");
+            if (p !== "") {
+                detailPage.localShotPath = p;
+                stop();
+            } else {
+                attempts++;
+                if (attempts > 30) { // ~9 s timeout
+                    detailPage.shotTimedOut = true;
+                    stop();
+                }
+            }
+        }
+    }
+    property bool installing: false     // main app op in progress
+    property string activeAddonId: ""   // addon id currently being installed/removed
+
+    // ── Install / Remove operation timer ──────────────────────────────────────
+    Timer {
+        id: installPollTimer
+        interval: 300
+        repeat: true
+        onTriggered: {
+            backend.pollOp();
+            if (!backend.opRunning) {
+                installPollTimer.stop();
+                if (detailPage.activeAddonId !== "") {
+                    // Addon op done — reload addon list
+                    detailPage.activeAddonId = "";
+                    detailPage._loadAddons();
+                } else {
+                    // Main app op done — reload full app record for updated install state
+                    detailPage.installing = false;
+                    if (detailPage.app && detailPage.app.id) {
+                        backend.loadAppById(detailPage.app.id);
+                        detailFetchTimer.start();
+                    }
+                }
+            }
+        }
+    }
+
+    function _loadAddons() {
+        var da = displayApp;
+        var id  = da ? (da.id  || "") : "";
+        var src = da ? (da.source || "") : "";
+        if (!id || !src) { addons = []; return; }
+        try {
+            var raw = backend.getAddons(id, src);
+            addons = JSON.parse(raw) || [];
+        } catch(e) { addons = []; }
+    }
 
     ListModel { id: screenshotModel }
 
@@ -147,6 +229,54 @@ Item {
                     Layout.fillWidth: true
                 }
 
+                // Launch button — webapps only, when installed
+                Button {
+                    visible: app != null && app.source === "webapp" && app.installed === true
+                    text: "Launch"
+                    highlighted: true
+                    onClicked: Qt.openUrlExternally(app.url || app.url_homepage || "")
+                }
+
+                // Add-ons button — shown when add-ons exist and app is not a webapp/appimage
+                Button {
+                    visible: detailPage.addons.length > 0
+                             && app != null
+                             && (app.source || "") !== "webapp"
+                             && (app.source || "") !== "appimage"
+                    text: "Add-ons"
+                    onClicked: addonsPopup.open()
+                }
+
+                // Install / Remove button — not shown for appimages (no catalog install)
+                InstallButton {
+                    id: installBtn
+                    visible: app != null && (app.source || "") !== "appimage"
+                    installed: displayApp != null && displayApp.installed === true
+                    busy:      detailPage.installing
+                    progress:  backend.opProgress
+
+                    Connections {
+                        target: sourceSelector
+                        function onCurrentIndexChanged() {
+                            detailPage._reloadScreenshots();
+                            detailPage._loadAddons();
+                        }
+                    }
+
+                    onInstallClicked: {
+                        if (!displayApp) return;
+                        detailPage.installing = true;
+                        backend.installApp(displayApp.id || "", displayApp.source || "");
+                        installPollTimer.start();
+                    }
+                    onRemoveClicked: {
+                        if (!displayApp) return;
+                        detailPage.installing = true;
+                        backend.removeApp(displayApp.id || "", displayApp.source || "");
+                        installPollTimer.start();
+                    }
+                }
+
                 // Source selector — shown when both native and Flatpak are available
                 ComboBox {
                     id: sourceSelector
@@ -160,49 +290,12 @@ Item {
                     }
                 }
 
-                // Launch button — webapps only, when installed
-                Button {
-                    visible: app != null && app.source === "webapp" && app.installed === true
-                    text: "Launch"
-                    highlighted: true
-                    onClicked: Qt.openUrlExternally(app.url || app.url_homepage || "")
-                }
-
-                // Install / Remove button — not shown for appimages (no catalog install)
-                Button {
-                    id: installBtn
-                    visible: app != null && (app.source || "") !== "appimage"
-                    Connections {
-                        target: sourceSelector
-                        function onCurrentIndexChanged() {
-                            detailPage._reloadScreenshots();
-                        }
-                    }
-                    text: displayApp != null && displayApp.installed === true ? "Remove" : "Install"
-                    highlighted: displayApp == null || displayApp.installed !== true
-                    onClicked: {
-                        if (!displayApp) return;
-                        if (displayApp.installed) {
-                            backend.removeApp(displayApp.id || "", displayApp.source || "");
-                        } else {
-                            backend.installApp(displayApp.id || "", displayApp.source || "");
-                        }
-                    }
-                }
-
-                // Uninstall button — appimages only
-                Button {
+                // Uninstall button — appimages only (red, no progress needed)
+                InstallButton {
                     visible: app != null && app.source === "appimage"
-                    flat: true
-                    implicitWidth: 82; implicitHeight: 32
-                    contentItem: Label {
-                        text: "Uninstall"
-                        color: "#e53935"
-                        font.pixelSize: 13
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: backend.removeApp(app.id || "", "appimage")
+                    installed: true
+                    busy: false
+                    onRemoveClicked: backend.removeApp(app.id || "", "appimage")
                 }
             }
         }
@@ -334,10 +427,34 @@ Item {
                         id: mainShot
                         anchors { left: parent.left; right: parent.right; top: parent.top; margins: 28 }
                         height: 280
-                        source: screenshotModel.count > 0 ? screenshotModel.get(detailPage.screenshotIndex).url : ""
+                        source: detailPage.localShotPath
                         fillMode: Image.PreserveAspectFit
                         smooth: true
                         clip: true
+                    }
+
+                    // Loading / error overlay (shown while downloading or on timeout)
+                    Rectangle {
+                        anchors { left: parent.left; right: parent.right; top: parent.top; margins: 28 }
+                        height: 280
+                        visible: detailPage.localShotPath === ""
+                        color: Qt.rgba(0.5, 0.5, 0.5, 0.08)
+                        radius: 4
+                        border.color: palette.mid; border.width: 1
+
+                        BusyIndicator {
+                            anchors.centerIn: parent
+                            running: !detailPage.shotTimedOut
+                            visible: !detailPage.shotTimedOut
+                            implicitWidth: 32; implicitHeight: 32
+                        }
+                        Label {
+                            anchors.centerIn: parent
+                            text: "Screenshot unavailable"
+                            color: root.dimText
+                            font.pixelSize: 12
+                            visible: detailPage.shotTimedOut
+                        }
                     }
 
                     Button {
@@ -602,6 +719,153 @@ Item {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Add-ons popup ─────────────────────────────────────────────────────────
+    Popup {
+        id: addonsPopup
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(480, detailPage.width - 48)
+        height: Math.min(520, detailPage.height - 80)
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            // Header
+            Rectangle {
+                Layout.fillWidth: true
+                height: 48
+                color: palette.button
+                radius: 4
+
+                RowLayout {
+                    anchors { fill: parent; leftMargin: 16; rightMargin: 12 }
+                    spacing: 8
+
+                    Label {
+                        text: "Add-ons"
+                        font.pixelSize: 15
+                        font.bold: true
+                        Layout.fillWidth: true
+                    }
+
+                    Button {
+                        text: "✕"
+                        flat: true
+                        implicitWidth: 32; implicitHeight: 32
+                        onClicked: addonsPopup.close()
+                    }
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: palette.mid; opacity: 0.3 }
+
+            // Scrollable add-on list
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: availableWidth
+                clip: true
+
+                Column {
+                    width: parent.width
+                    topPadding: 8
+                    bottomPadding: 8
+                    spacing: 0
+
+                    Repeater {
+                        model: detailPage.addons
+
+                        Column {
+                            width: parent.width
+                            spacing: 0
+
+                            Rectangle {
+                                width: parent.width
+                                height: addonRow.implicitHeight + 20
+                                color: "transparent"
+
+                                RowLayout {
+                                    id: addonRow
+                                    anchors {
+                                        left: parent.left; right: parent.right
+                                        verticalCenter: parent.verticalCenter
+                                        leftMargin: 16; rightMargin: 16
+                                    }
+                                    spacing: 12
+
+                                    Column {
+                                        Layout.fillWidth: true
+                                        spacing: 3
+
+                                        Label {
+                                            text: modelData.name || modelData.id || ""
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                            width: parent.width
+                                        }
+                                        Label {
+                                            text: modelData.summary || ""
+                                            font.pixelSize: 11
+                                            color: root.dimText
+                                            elide: Text.ElideRight
+                                            width: parent.width
+                                            visible: text !== ""
+                                        }
+                                    }
+
+                                    InstallButton {
+                                        installed: modelData.installed === true
+                                        busy:      detailPage.activeAddonId === (modelData.id || "")
+                                        progress:  backend.opProgress
+                                        implicitWidth: 110; implicitHeight: 30
+
+                                        onInstallClicked: {
+                                            var id  = modelData.id || "";
+                                            var src = modelData.source || "flatpak";
+                                            detailPage.activeAddonId = id;
+                                            backend.installApp(id, src);
+                                            installPollTimer.start();
+                                        }
+                                        onRemoveClicked: {
+                                            var id  = modelData.id || "";
+                                            var src = modelData.source || "flatpak";
+                                            detailPage.activeAddonId = id;
+                                            backend.removeApp(id, src);
+                                            installPollTimer.start();
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: parent.width
+                                height: 1
+                                color: palette.mid
+                                opacity: 0.12
+                                visible: index < detailPage.addons.length - 1
+                            }
+                        }
+                    }
+
+                    // Empty state
+                    Label {
+                        width: parent.width
+                        text: "No add-ons available"
+                        color: root.dimText
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        topPadding: 24; bottomPadding: 24
+                        visible: detailPage.addons.length === 0
                     }
                 }
             }

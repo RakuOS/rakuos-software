@@ -22,6 +22,21 @@ ApplicationWindow {
 
     SoftwareBackend { id: backend }
 
+    // ── Cache readiness ───────────────────────────────────────────────────────
+    property bool cacheReady: false
+
+    Timer {
+        id: cacheCheckTimer
+        interval: 200
+        repeat: true
+        running: !root.cacheReady
+        onTriggered: {
+            if (backend.isCacheReady()) {
+                root.cacheReady = true;
+            }
+        }
+    }
+
     // ── Startup init ──────────────────────────────────────────────────────────
     Component.onCompleted: {
         // Pre-warm AppStream cache so first search/browse is instant
@@ -207,9 +222,15 @@ ApplicationWindow {
                         anchors { fill: parent; leftMargin: 14; rightMargin: 8 }
                         spacing: 8
 
-                        Label {
-                            text: "🐉"
-                            font.pixelSize: 22
+                        Image {
+                            source: "file:///usr/share/pixmaps/rakuos-logo.png"
+                            sourceSize.width: 28
+                            sourceSize.height: 28
+                            Layout.preferredWidth: 28
+                            Layout.preferredHeight: 28
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            mipmap: true
                         }
 
                         Label {
@@ -502,6 +523,41 @@ ApplicationWindow {
                     case 8: webAppsPage.activate(); break;
                     case 9: appImagesPage.activate(); break;
                 }
+            }
+        }
+    }
+
+    // ── Startup loading overlay (direct ApplicationWindow child — no layout conflict) ──
+    Rectangle {
+        anchors.fill: parent
+        color: palette.window
+        visible: !root.cacheReady
+        z: 100
+
+        Column {
+            anchors.centerIn: parent
+            spacing: 20
+
+            Image {
+                anchors.horizontalCenter: parent.horizontalCenter
+                source: "file:///usr/share/pixmaps/rakuos-logo.svg"
+                width: 80; height: 80
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+            }
+
+            BusyIndicator {
+                anchors.horizontalCenter: parent.horizontalCenter
+                running: true
+                implicitWidth: 40; implicitHeight: 40
+            }
+
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Loading software catalog…"
+                font.pixelSize: 14
+                color: root.dimText
             }
         }
     }

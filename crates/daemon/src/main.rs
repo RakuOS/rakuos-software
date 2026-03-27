@@ -149,7 +149,7 @@ fn send_notification(summary: &str, body: &str) {
         .summary(summary)
         .body(body)
         .appname("RakuOS Software")
-        .icon("software-update-available")
+        .icon("system-software-update")
         .timeout(notify_rust::Timeout::Milliseconds(8000))
         .show();
 }

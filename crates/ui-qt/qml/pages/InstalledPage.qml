@@ -117,36 +117,36 @@ Item {
             AppListView {
                 apps: installedPage.rpmApps
                 emptyText: "No overlay packages installed."
-                onRemoveApp: backend.removeApp(appId, "native")
+                onRemoveApp: function(appId) { backend.removeApp(appId, "native") }
                 onReloadRequested: installedPage.loadInstalled()
-                onAppClicked: root.showDetail(app)
+                onAppClicked: function(app) { root.showDetail(app) }
             }
 
             // Flatpak tab
             AppListView {
                 apps: installedPage.flatpakApps
                 emptyText: "No Flatpaks installed."
-                onRemoveApp: backend.removeApp(appId, "flatpak")
+                onRemoveApp: function(appId) { backend.removeApp(appId, "flatpak") }
                 onReloadRequested: installedPage.loadInstalled()
-                onAppClicked: root.showDetail(app)
+                onAppClicked: function(app) { root.showDetail(app) }
             }
 
             // AppImages tab
             AppListView {
                 apps: installedPage.appImages
                 emptyText: "No AppImages installed."
-                onRemoveApp: backend.removeApp(appId, "appimage")
+                onRemoveApp: function(appId) { backend.removeApp(appId, "appimage") }
                 onReloadRequested: installedPage.loadInstalled()
-                onAppClicked: root.showDetail(app)
+                onAppClicked: function(app) { root.showDetail(app) }
             }
 
             // Web Apps tab
             AppListView {
                 apps: installedPage.webApps
                 emptyText: "No web apps installed."
-                onRemoveApp: backend.removeApp(appId, "webapp")
+                onRemoveApp: function(appId) { backend.removeApp(appId, "webapp") }
                 onReloadRequested: installedPage.loadInstalled()
-                onAppClicked: root.showDetail(app)
+                onAppClicked: function(app) { root.showDetail(app) }
             }
         }
     }

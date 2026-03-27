@@ -99,13 +99,6 @@ Item {
         return imageName;
     }
 
-    function repoUrlFromImage(imageRef) {
-        if (!imageRef) return "";
-        var parts = imageRef.rsplit(":");
-        // imageRef like "ghcr.io/rakuos/rakuos-kde:latest"
-        var colonIdx = imageRef.lastIndexOf(":");
-        return colonIdx > 0 ? imageRef.substring(0, colonIdx) : imageRef;
-    }
 
     ScrollView {
         anchors.fill: parent
