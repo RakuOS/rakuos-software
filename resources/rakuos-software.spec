@@ -63,7 +63,6 @@ Designed for KDE Plasma and other Qt-based desktop environments.
 # ─── Prep ────────────────────────────────────────────────────────────────────
 %prep
 %autosetup -n %{name}-main
-%cargo_prep
 
 # ─── Build ───────────────────────────────────────────────────────────────────
 %build
