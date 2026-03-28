@@ -116,6 +116,10 @@ install -dm755 %{buildroot}%{_datadir}/rakuos/appstream/icons
 install -m644 resources/appstream/icons/*.png \
     %{buildroot}%{_datadir}/rakuos/appstream/icons/ 2>/dev/null || true
 
+# QML files
+install -dm755 %{buildroot}%{_datadir}/rakuos-software-qt
+install -m644 crates/ui-qt/qml/* \
+    %{buildroot}%{_datadir}/rakuos-software-qt/
 # ─── Files ───────────────────────────────────────────────────────────────────
 %files common
 %license LICENSE
@@ -133,7 +137,7 @@ install -m644 resources/appstream/icons/*.png \
 
 %files qt
 %{_libexecdir}/rakuos/software/rakuos-software-qt
-
+%{_datadir}/rakuos-software-qt/
 # ─── Changelog ───────────────────────────────────────────────────────────────
 %changelog
 * Fri Mar 27 2026 RakuOS Project <dev@rakuos.org> - 1.0.0-1
