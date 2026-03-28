@@ -118,7 +118,7 @@ install -m644 resources/appstream/icons/*.png \
 
 # QML files
 install -dm755 %{buildroot}%{_datadir}/rakuos-software-qt
-install -m644 crates/ui-qt/qml/* \
+install -dm644 crates/ui-qt/qml/* \
     %{buildroot}%{_datadir}/rakuos-software-qt/
 # ─── Files ───────────────────────────────────────────────────────────────────
 %files common
