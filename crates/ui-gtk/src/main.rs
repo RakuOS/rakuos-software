@@ -27,6 +27,10 @@ fn show_flag_path() -> PathBuf {
     std::env::temp_dir().join("rakuos-software-show")
 }
 
+fn quit_flag_path() -> PathBuf {
+    std::env::temp_dir().join("rakuos-software-quit")
+}
+
 fn write_pid_file() {
     let path = pid_file_path();
     if let Some(parent) = path.parent() {
@@ -76,10 +80,14 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
-    // Normal launch (no file argument) → just build the UI.
+    // Normal launch (no file argument) → build UI or raise existing window.
     app.connect_activate(move |app| {
         if app.windows().is_empty() {
             build_ui(app, start_hidden);
+        } else {
+            // Second launch forwarded by GIO single-instance — signal the polling
+            // timer so it navigates home before raising the window.
+            let _ = std::fs::write(show_flag_path(), "1");
         }
     });
 
@@ -358,14 +366,29 @@ fn build_ui(app: &Application, start_hidden: bool) {
         glib::ControlFlow::Continue
     });
 
-    // ── Tray show-flag + open-file polling ───────────────────────────────────
+    // ── Tray show-flag + open-file + quit-flag polling ───────────────────────
     let window_raise = window.clone();
     let nav_open = Arc::clone(&nav_arc);
+    let view_stack_raise = view_stack.clone();
+    let content_stack_raise = content_stack.clone();
+    let search_bar_raise = search_bar.clone();
     glib::timeout_add_local(Duration::from_millis(500), move || {
-        // Tray raise
+        // Quit flag: daemon requested full shutdown — bypass close-request handler.
+        if quit_flag_path().exists() {
+            let _ = std::fs::remove_file(quit_flag_path());
+            std::process::exit(0);
+        }
+        // Tray raise (or second-launch via connect_activate)
         let flag = show_flag_path();
         if flag.exists() {
             let _ = std::fs::remove_file(&flag);
+            // Dismiss search if active
+            search_bar_raise.set_search_mode(false);
+            content_stack_raise.set_visible_child_name("main");
+            // Pop any pushed detail/nav pages back to root
+            while nav_open.pop() {}
+            // Switch to Home tab
+            view_stack_raise.set_visible_child_name("home");
             window_raise.present();
         }
         // Open-file request from connect_open (single-instance second launch)

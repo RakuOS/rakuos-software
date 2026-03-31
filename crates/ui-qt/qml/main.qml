@@ -58,13 +58,17 @@ ApplicationWindow {
         }
     }
 
-    // ── Show-request poll (tray "Open" while window is hidden) ────────────────
+    // ── Show-request / quit-request poll (tray interactions) ─────────────────
     Timer {
         id: showRequestTimer
-        interval: 1500
+        interval: 500
         repeat: true
         running: true
         onTriggered: {
+            if (backend.checkQuitRequest()) {
+                Qt.quit();
+                return;
+            }
             if (backend.checkShowRequest()) {
                 root.visible = true;
                 root.raise();

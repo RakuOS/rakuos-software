@@ -13,6 +13,19 @@ pub fn pid_file() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".cache/rakuos/software-ui.pid")
 }
 
+fn show_flag_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rakuos-software-show")
+}
+
+/// Returns true if a prior instance is already running (PID file + /proc check).
+fn instance_already_running() -> bool {
+    std::fs::read_to_string(pid_file())
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .map(|pid| std::path::Path::new(&format!("/proc/{}", pid)).exists())
+        .unwrap_or(false)
+}
+
 fn write_pid_file() {
     let path = pid_file();
     if let Some(parent) = path.parent() {
@@ -52,6 +65,12 @@ fn ensure_daemon_running() {
 fn main() {
     env_logger::init();
     std::env::set_var("QML_XHR_ALLOW_FILE_READ", "1");
+
+    // Single-instance guard: if already running, signal it to show and exit.
+    if instance_already_running() {
+        let _ = std::fs::write(show_flag_path(), "1");
+        return;
+    }
 
     write_pid_file();
     ensure_daemon_running();

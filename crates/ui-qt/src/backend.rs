@@ -864,6 +864,17 @@ pub struct SoftwareBackend {
         false
     }),
 
+    // Check if the tray daemon wrote a "quit" flag.
+    // Returns true once (deletes the flag) so QML can call Qt.quit().
+    checkQuitRequest: qt_method!(fn checkQuitRequest(&mut self) -> bool {
+        let flag = std::env::temp_dir().join("rakuos-software-quit");
+        if flag.exists() {
+            let _ = std::fs::remove_file(&flag);
+            return true;
+        }
+        false
+    }),
+
     // Read cached update count written by the daemon's last background check.
     // Populates pendingUpdateCount so the UI can show a badge without
     // blocking on a fresh check.

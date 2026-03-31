@@ -26,6 +26,10 @@ fn show_flag_path() -> std::path::PathBuf {
     std::env::temp_dir().join("rakuos-software-show")
 }
 
+fn quit_flag_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rakuos-software-quit")
+}
+
 fn daemon_cache_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".cache/rakuos/daemon-update-cache.json")
@@ -118,15 +122,9 @@ async fn main() -> anyhow::Result<()> {
         match msg {
             DaemonMsg::Quit => {
                 log::info!("Quitting daemon.");
-                // Kill the UI if it's running
-                if let Some(pid) = std::fs::read_to_string(pid_file())
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                {
-                    if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
-                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
-                    }
-                }
+                // Signal the UI to quit via flag file (SIGTERM is blocked by the
+                // close-request handler that hides instead of closing the window).
+                let _ = std::fs::write(quit_flag_path(), "1");
                 std::process::exit(0);
             }
             DaemonMsg::OpenUi => {
