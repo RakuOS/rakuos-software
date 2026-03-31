@@ -170,6 +170,18 @@ Item {
         } catch(e) { addons = []; }
     }
 
+    // Called when navigating away — stops timers and releases heavy data.
+    function clear() {
+        detailFetchTimer.stop();
+        reviewsPollTimer.stop();
+        installPollTimer.stop();
+        submitPollTimer.stop();
+        app        = null;
+        reviews    = [];
+        addons     = [];
+        screenshotModel.clear();
+    }
+
     function _loadReviews() {
         if (!app || !app.id) return;
         reviewsLoading = true;
@@ -476,6 +488,7 @@ Item {
                         smooth: true
                         clip: true
                         asynchronous: true
+                        cache: false
                     }
 
                     // Loading / error overlay

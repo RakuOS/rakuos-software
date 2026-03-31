@@ -73,6 +73,7 @@ ApplicationWindow {
                 root.visible = true;
                 root.raise();
                 root.requestActivate();
+                if (backend.currentPage === 7) detailPageItem.clear();
                 backend.navigate(0);   // always return to Home
             }
         }
@@ -106,6 +107,7 @@ ApplicationWindow {
     }
 
     function hideDetail() {
+        detailPageItem.clear();
         backend.navigate(previousPage);
     }
 

@@ -14,6 +14,30 @@ use rakuos_reviews::Review;
 
 use super::icon_helper::load_app_icon;
 
+// ── Active source tracking ────────────────────────────────────────────────────
+// Every glib timer created by a detail page is registered here.
+// cancel_current_detail() force-removes them all immediately, dropping their
+// closures synchronously and releasing every widget ref they held.
+
+thread_local! {
+    static ACTIVE_SOURCES: RefCell<Vec<glib::SourceId>> = const { RefCell::new(Vec::new()) };
+}
+
+fn track(id: glib::SourceId) {
+    ACTIVE_SOURCES.with(|s| s.borrow_mut().push(id));
+}
+
+/// Force-cancel all timers belonging to the current detail page.
+/// Safe to call even when no detail page is open.
+pub fn cancel_current_detail() {
+    ACTIVE_SOURCES.with(|sources| {
+        for id in sources.borrow_mut().drain(..) {
+            // Returns false (no-op) if the source already completed — that is fine.
+            let _ = id.remove();
+        }
+    });
+}
+
 /// Push a detail page for an app identified by its ID.
 pub fn push_detail(
     nav: &NavigationView,
@@ -24,22 +48,23 @@ pub fn push_detail(
     icon_url: &str,
     source: &str,
 ) {
-    let page_w = build(app_id, app_name, app_summary, icon_path, icon_url, source);
+    cancel_current_detail(); // drop all timers from any previous detail page first
     let nav_page = NavigationPage::builder()
         .title(app_name)
-        .child(&page_w)
         .build();
+    build(app_id, app_name, app_summary, icon_path, icon_url, source, &nav_page);
     nav.push(&nav_page);
 }
 
-pub fn build(
+fn build(
     app_id: &str,
     app_name: &str,
     app_summary: &str,
     icon_path: &str,
     icon_url: &str,
     source: &str,
-) -> Widget {
+    nav_page: &NavigationPage,
+) {
     let toolbar = ToolbarView::new();
     toolbar.add_top_bar(&HeaderBar::new());
 
@@ -242,14 +267,12 @@ pub fn build(
         .build();
     main_box.append(&reviews_title);
 
-    // Outer container shown to the rest of the function
     let reviews_box = GBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(8)
         .build();
     main_box.append(&reviews_box);
 
-    // Inner box where the current page's cards are rendered
     let reviews_content = GBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(8)
@@ -272,42 +295,49 @@ pub fn build(
     pagination_box.append(&next_btn);
     reviews_box.append(&pagination_box);
 
-    // Shared state for pagination
     const REVIEWS_PER_PAGE: usize = 10;
     let all_reviews: Rc<RefCell<Vec<Review>>> = Rc::new(RefCell::new(Vec::new()));
     let current_page: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
-    // Shared render closure — filled in after reviews load
+    // render_fn held exclusively by the data-load timer (strong ref).
+    // Prev/next buttons use Weak to avoid a reference cycle:
+    //   render_fn → prev_c/next_c (GObjects) and buttons → render_fn_c (Rc)
     let render_fn: Rc<RefCell<Box<dyn Fn()>>> = Rc::new(RefCell::new(Box::new(|| {})));
 
-    // Prev button
+    // Prev button — Weak ref breaks the render_fn ↔ button cycle
     {
-        let render_fn_c  = Rc::clone(&render_fn);
+        let render_fn_weak = Rc::downgrade(&render_fn);
         let current_page_c = Rc::clone(&current_page);
         prev_btn.connect_clicked(move |_| {
             let mut p = current_page_c.borrow_mut();
-            if *p > 0 { *p -= 1; drop(p); render_fn_c.borrow()(); }
+            if *p > 0 {
+                *p -= 1;
+                drop(p);
+                if let Some(rf) = render_fn_weak.upgrade() { rf.borrow()(); }
+            }
         });
     }
-    // Next button
+    // Next button — Weak ref
     {
-        let render_fn_c    = Rc::clone(&render_fn);
+        let render_fn_weak = Rc::downgrade(&render_fn);
         let current_page_c = Rc::clone(&current_page);
         let all_reviews_c  = Rc::clone(&all_reviews);
         next_btn.connect_clicked(move |_| {
             let total = all_reviews_c.borrow().len();
             let max_page = total.saturating_sub(1) / REVIEWS_PER_PAGE;
             let mut p = current_page_c.borrow_mut();
-            if *p < max_page { *p += 1; drop(p); render_fn_c.borrow()(); }
+            if *p < max_page {
+                *p += 1;
+                drop(p);
+                if let Some(rf) = render_fn_weak.upgrade() { rf.borrow()(); }
+            }
         });
     }
 
     // ── Shared state ──────────────────────────────────────────────────────────
-    // (app_id, source, is_installed)
     let install_state: Rc<RefCell<(String, String, bool)>> =
         Rc::new(RefCell::new((app_id.to_string(), source.to_string(), false)));
 
-    // Add-ons stored for the popup
     let addons_store: Rc<RefCell<Vec<serde_json::Value>>> =
         Rc::new(RefCell::new(Vec::new()));
 
@@ -336,6 +366,7 @@ pub fn build(
 
         let btn_c = btn.clone();
         let state_cc = Rc::clone(&state_c);
+        // Not tracked: this timer is short-lived per-click and self-terminates.
         glib::timeout_add_local(Duration::from_millis(50), move || {
             match rx.try_recv() {
                 Ok(ok) => {
@@ -382,7 +413,8 @@ pub fn build(
     let screenshots_box_t = screenshots_box.clone();
     let addons_store_t = Rc::clone(&addons_store);
 
-    glib::timeout_add_local(Duration::from_millis(80), move || {
+    // Tracked: force-removed by cancel_current_detail() when navigating away.
+    track(glib::timeout_add_local(Duration::from_millis(80), move || {
         match rx.try_recv() {
             Ok((app_data, reviews)) => {
                 if let Some(app) = app_data {
@@ -418,7 +450,6 @@ pub fn build(
                         dropdown_box.set_visible(true);
                         source_badge.set_visible(false);
 
-                        // Init state from best source
                         {
                             let src = &app.sources[best];
                             *install_state_t.borrow_mut() =
@@ -427,7 +458,6 @@ pub fn build(
                         apply_install_state(&install_btn, app.sources[best].installed);
                         install_btn.set_sensitive(true);
 
-                        // Load add-ons for the initial source
                         {
                             let src = &app.sources[best];
                             if let Ok(addons) = rakuos_packages::get_addons_for_app(&src.id, &src.source) {
@@ -468,7 +498,7 @@ pub fn build(
                                 lic_dd.set_visible(true);
                             }
 
-                            // Reload screenshots
+                            // Reload screenshots for the new source
                             while let Some(ch) = sc_dd.first_child() { sc_dd.remove(&ch); }
                             if !src.screenshots.is_empty() {
                                 sb_dd.set_visible(true);
@@ -477,14 +507,12 @@ pub fn build(
                                 sb_dd.set_visible(false);
                             }
 
-                            // Reload add-ons
                             if let Ok(addons) = rakuos_packages::get_addons_for_app(&src.id, &src.source) {
                                 *store_dd.borrow_mut() = addons;
                                 abtn_dd.set_visible(!store_dd.borrow().is_empty());
                             }
                         });
                     } else {
-                        // For native packages use package_name (RPM name), not the AppStream id
                         let pkg_id = if app.source == "flatpak" {
                             app.id.clone()
                         } else {
@@ -507,14 +535,12 @@ pub fn build(
                         }
                     }
 
-                    // Screenshots
                     if !app.screenshots.is_empty() {
                         screenshots_box_t.set_visible(true);
                         load_screenshots(&screenshots_carousel_t, &app.screenshots);
                     }
                 }
 
-                // Reviews — paginated
                 let (avg, count) = rakuos_reviews::aggregate(&reviews);
                 if count > 0 {
                     rating_lbl.set_label(&format!("★ {:.1}  ({} reviews)", avg, count));
@@ -525,16 +551,16 @@ pub fn build(
                 *all_reviews.borrow_mut() = reviews;
                 *current_page.borrow_mut() = 0;
 
-                // Build the render closure now that we have the data
-                let reviews_c      = Rc::clone(&all_reviews);
-                let page_c         = Rc::clone(&current_page);
-                let content_c      = reviews_content.clone();
-                let page_lbl_c     = page_lbl.clone();
-                let prev_c         = prev_btn.clone();
-                let next_c         = next_btn.clone();
-                let pagination_c   = pagination_box.clone();
+                // Build the render closure — render_fn is the only strong Rc holder;
+                // buttons use Weak so this drops immediately when the timer exits.
+                let reviews_c    = Rc::clone(&all_reviews);
+                let page_c       = Rc::clone(&current_page);
+                let content_c    = reviews_content.clone();
+                let page_lbl_c   = page_lbl.clone();
+                let prev_c       = prev_btn.clone();
+                let next_c       = next_btn.clone();
+                let pagination_c = pagination_box.clone();
                 *render_fn.borrow_mut() = Box::new(move || {
-                    // Clear current cards
                     while let Some(child) = content_c.first_child() {
                         content_c.remove(&child);
                     }
@@ -555,18 +581,16 @@ pub fn build(
                     }
                 });
 
-                // Render the first page
                 render_fn.borrow()();
-
                 glib::ControlFlow::Break
             }
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
             Err(_) => glib::ControlFlow::Break,
         }
-    });
+    }));
 
     toolbar.set_content(Some(&scroll));
-    toolbar.upcast()
+    nav_page.set_child(Some(&toolbar));
 }
 
 // ── Add-ons dialog ────────────────────────────────────────────────────────────
@@ -670,11 +694,10 @@ fn show_addons_dialog(parent_widget: &impl IsA<gtk4::Widget>, addons: &[serde_js
     dialog.present(Some(parent_widget));
 }
 
-// ── Screenshot loading — gtk4::Picture fills carousel width ───────────────────
+// ── Screenshot loading ────────────────────────────────────────────────────────
 
 fn load_screenshots(carousel: &Carousel, urls: &[String]) {
     for url in urls.iter().take(8) {
-        // Each carousel page: Picture fills full width, preserves aspect ratio
         let picture = gtk4::Picture::builder()
             .hexpand(true)
             .can_shrink(true)
@@ -693,7 +716,8 @@ fn load_screenshots(carousel: &Carousel, urls: &[String]) {
         });
 
         let pic_c = picture.clone();
-        glib::timeout_add_local(Duration::from_millis(100), move || {
+        // Tracked: force-removed by cancel_current_detail() on page exit.
+        track(glib::timeout_add_local(Duration::from_millis(100), move || {
             match srx.try_recv() {
                 Ok(Some(b)) => {
                     let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
@@ -709,7 +733,7 @@ fn load_screenshots(carousel: &Carousel, urls: &[String]) {
                 Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                 Err(_) => glib::ControlFlow::Break,
             }
-        });
+        }));
 
         carousel.append(&picture);
     }

@@ -194,6 +194,7 @@ fn build_ui(app: &Application, start_hidden: bool) {
 
     let nav_clone = nav_arc.clone();
     back_btn.connect_clicked(move |_| {
+        pages::detail::cancel_current_detail();
         nav_clone.pop();
     });
 
@@ -385,7 +386,8 @@ fn build_ui(app: &Application, start_hidden: bool) {
             // Dismiss search if active
             search_bar_raise.set_search_mode(false);
             content_stack_raise.set_visible_child_name("main");
-            // Pop any pushed detail/nav pages back to root
+            // Cancel any in-flight detail page loads, then pop to root
+            pages::detail::cancel_current_detail();
             while nav_open.pop() {}
             // Switch to Home tab
             view_stack_raise.set_visible_child_name("home");
