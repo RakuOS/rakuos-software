@@ -73,7 +73,7 @@ ApplicationWindow {
                 root.visible = true;
                 root.raise();
                 root.requestActivate();
-                if (backend.currentPage === 7) detailPageItem.clear();
+                if (backend.currentPage === 7) detailLoader.active = false;
                 backend.navigate(0);   // always return to Home
             }
         }
@@ -103,11 +103,13 @@ ApplicationWindow {
     function showDetail(appData) {
         detailApp = appData;
         previousPage = backend.currentPage;
-        backend.navigate(7);  // page 7 = detail
+        detailLoader.active = false;  // destroy any previous detail instance
+        detailLoader.active = true;   // create a fresh one
+        backend.navigate(7);
     }
 
     function hideDetail() {
-        detailPageItem.clear();
+        detailLoader.active = false;  // completely destroy the component, freeing all memory
         backend.navigate(previousPage);
     }
 
@@ -514,11 +516,17 @@ ApplicationWindow {
                 SystemPage    { id: systemPageItem }
                 SettingsPage  { id: settingsPage }
 
-                // Page 7: Detail
-                DetailPage {
-                    id: detailPageItem
-                    app: root.detailApp
-                    onBackRequested: root.hideDetail()
+                // Page 7: Detail — loaded on demand; active=false destroys it entirely,
+                // freeing all widget memory, textures, and JS property bindings.
+                Loader {
+                    id: detailLoader
+                    active: false
+                    sourceComponent: Component {
+                        DetailPage {
+                            onBackRequested: root.hideDetail()
+                        }
+                    }
+                    onLoaded: item.loadApp(root.detailApp)
                 }
 
                 // Page 8: Web Apps catalog
@@ -543,7 +551,7 @@ ApplicationWindow {
                     case 3: installedPage.activate(); break;
                     case 4: updatesPage.activate(); break;
                     case 5: systemPageItem.activate(); break;
-                    case 7: detailPageItem.loadApp(root.detailApp); break;
+                    case 7: if (detailLoader.item) detailLoader.item.loadApp(root.detailApp); break;
                     case 8: webAppsPage.activate(); break;
                 }
             }

@@ -161,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Desktop notification if updates found
                 if let Some(body) = result.notification_body() {
-                    send_notification("Updates Available", &body);
+                    send_notification("Updates Available", &body).await;
                 }
 
                 log::info!("Check complete: {} update(s) found.", count);
@@ -172,12 +172,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_notification(summary: &str, body: &str) {
+async fn send_notification(summary: &str, body: &str) {
     let _ = notify_rust::Notification::new()
         .summary(summary)
         .body(body)
         .appname("RakuOS Software")
         .icon("system-software-update")
         .timeout(notify_rust::Timeout::Milliseconds(8000))
-        .show();
+        .show_async()
+        .await;
 }
