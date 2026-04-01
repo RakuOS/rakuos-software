@@ -476,10 +476,15 @@ pub struct SoftwareBackend {
                 "total": total,
             });
 
-            let _ = std::fs::write(
-                log_path(),
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            );
+            let result_json = serde_json::to_string_pretty(&result).unwrap_or_default();
+            let _ = std::fs::write(log_path(), &result_json);
+
+            // Write to daemon cache so the tray and update page share the same data
+            let cache_path = daemon_cache_path();
+            if let Some(parent) = cache_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&cache_path, &result_json);
 
             shared.result.store(1, Ordering::Relaxed);
             shared.running.store(false, Ordering::Relaxed);

@@ -127,6 +127,25 @@ fn load_updates(
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let system = rt.block_on(rakuos_updates::check_for_update());
         let flatpaks = rakuos_flatpak::get_updates();
+
+        // Write to daemon cache so the tray stays in sync with what the page found
+        let total = (if system.available { 1 } else { 0 }) + flatpaks.len();
+        let cache = serde_json::json!({
+            "total":           total,
+            "packages":        [],
+            "flatpak":         serde_json::to_value(&flatpaks).unwrap_or_default(),
+            "appimages":       [],
+            "image_available": system.available,
+            "image_info":      serde_json::to_value(&system).unwrap_or_default(),
+        });
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let cache_path = std::path::PathBuf::from(home)
+            .join(".cache/rakuos/daemon-update-cache.json");
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&cache_path, serde_json::to_string_pretty(&cache).unwrap_or_default());
+
         let _ = tx.send((system, flatpaks));
     });
 
