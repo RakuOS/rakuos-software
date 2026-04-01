@@ -7,7 +7,7 @@ use libadwaita::{ActionRow, PreferencesGroup, PreferencesPage};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use rakuos_updates::{OverlayStatus, SystemStatus};
+use rakuos_updates::{PkgrootStatus, SystemStatus};
 
 pub fn build() -> Widget {
     let scroll = ScrolledWindow::builder()
@@ -61,20 +61,20 @@ pub fn build() -> Widget {
 
     pref_page.add(&sys_group);
 
-    // ── Overlay Packages group ────────────────────────────────────────────
+    // ── Installed Packages group ──────────────────────────────────────────
     let overlay_group = PreferencesGroup::builder()
-        .title("Overlay Packages")
-        .description("Packages installed on top of the base OS image")
+        .title("Installed Packages")
+        .description("Packages installed into the RakuOS package root")
         .build();
 
     let overlay_count_row = ActionRow::builder()
-        .title("Installed Overlay Packages")
+        .title("Installed Packages")
         .subtitle("Loading…")
         .build();
     overlay_group.add(&overlay_count_row);
 
     let overlay_dirty_row = ActionRow::builder()
-        .title("Overlay Status")
+        .title("Package Root Status")
         .subtitle("Loading…")
         .build();
     overlay_group.add(&overlay_dirty_row);
@@ -171,11 +171,11 @@ pub fn build() -> Widget {
     pref_page.add(&firmware_group);
 
     // ── Load system status in background ─────────────────────────────────
-    let (tx, rx) = mpsc::channel::<(SystemStatus, OverlayStatus)>();
+    let (tx, rx) = mpsc::channel::<(SystemStatus, PkgrootStatus)>();
 
     std::thread::spawn(move || {
         let status = rakuos_updates::get_system_status();
-        let overlay = rakuos_updates::get_overlay_status();
+        let overlay = rakuos_updates::get_pkgroot_status();
         let _ = tx.send((status, overlay));
     });
 
@@ -212,7 +212,7 @@ pub fn build() -> Widget {
                 } else if overlay.has_digest {
                     "In sync with base image"
                 } else {
-                    "No overlay state recorded"
+                    "No package root state recorded"
                 };
                 overlay_dirty_row.set_subtitle(overlay_status_text);
 

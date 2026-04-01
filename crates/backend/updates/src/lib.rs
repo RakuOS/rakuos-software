@@ -33,7 +33,7 @@ pub struct UpdateInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OverlayStatus {
+pub struct PkgrootStatus {
     pub package_count: usize,
     pub packages: Vec<String>,
     pub has_digest: bool,
@@ -185,8 +185,8 @@ pub fn schedule_reboot() -> (bool, String) {
     }
 }
 
-/// Get overlay package count and dirty/digest state.
-pub fn get_overlay_status() -> OverlayStatus {
+/// Get package root package count and dirty/digest state.
+pub fn get_pkgroot_status() -> PkgrootStatus {
     let packages_list = Path::new("/var/lib/rakuos/packages.list");
     let state_file    = Path::new("/var/lib/rakuos/overlay.state");
     let dirty_file    = Path::new("/var/lib/rakuos/overlay.dirty");
@@ -202,7 +202,7 @@ pub fn get_overlay_status() -> OverlayStatus {
         Vec::new()
     };
 
-    OverlayStatus {
+    PkgrootStatus {
         package_count: packages.len(),
         packages,
         has_digest: state_file.exists(),

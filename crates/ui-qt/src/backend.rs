@@ -185,7 +185,7 @@ pub struct SoftwareBackend {
                     all.push(serde_json::to_value(a).unwrap_or_default());
                 }
             }
-            // Native/overlay installed
+            // Native/pkgroot installed
             if let Ok(apps) = rakuos_packages::get_installed() {
                 for a in apps {
                     all.push(serde_json::to_value(a).unwrap_or_default());
@@ -536,8 +536,8 @@ pub struct SoftwareBackend {
         });
     }),
 
-    getOverlayStatus: qt_method!(fn getOverlayStatus(&mut self) -> QString {
-        let status = rakuos_updates::get_overlay_status();
+    getPkgrootStatus: qt_method!(fn getPkgrootStatus(&mut self) -> QString {
+        let status = rakuos_updates::get_pkgroot_status();
         serde_json::to_string(&status).unwrap_or_default().into()
     }),
 
@@ -545,7 +545,7 @@ pub struct SoftwareBackend {
         self.start_op();
         let shared = self.get_shared();
         std::thread::spawn(move || {
-            let _ = std::fs::write(log_path(), "Upgrading overlay packages...\n");
+            let _ = std::fs::write(log_path(), "Upgrading packages...\n");
             let mut exit_code = 1i32;
             for line in rakuos_updates::upgrade_packages_stream() {
                 if let Some(code) = line.strip_prefix("__done__") {
@@ -587,6 +587,17 @@ pub struct SoftwareBackend {
                     let (ok, msg) = rakuos_webapps::install(&id);
                     append_log(&msg);
                     (None, ok)
+                }
+                "__reset_pkgroot__" => {
+                    let c = Command::new("pkexec")
+                        .args(["/usr/libexec/rakuos/rakuos-pkgroot-reset", "--confirm"])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn();
+                    match c {
+                        Ok(child) => (Some(child), true),
+                        Err(e)    => { append_log(&e.to_string()); (None, false) }
+                    }
                 }
                 _ => {
                     // Resolve AppStream ID → RPM package name
@@ -686,16 +697,16 @@ pub struct SoftwareBackend {
         let shared = self.get_shared();
         std::thread::spawn(move || {
             let status = rakuos_updates::get_system_status();
-            let overlay = rakuos_updates::get_overlay_status();
+            let pkgroot = rakuos_updates::get_pkgroot_status();
             let result = serde_json::json!({
                 "image":     status.image,
                 "version":   status.version,
                 "digest":    status.digest,
                 "timestamp": status.timestamp,
                 "error":     status.error,
-                "overlay_packages": overlay.packages,
-                "overlay_count": overlay.package_count,
-                "overlay_dirty": overlay.is_dirty,
+                "pkgroot_packages": pkgroot.packages,
+                "pkgroot_count":    pkgroot.package_count,
+                "pkgroot_dirty":    pkgroot.is_dirty,
             });
             let json = serde_json::to_string(&result).unwrap_or_default();
             let _ = std::fs::write(log_path(), &json);
