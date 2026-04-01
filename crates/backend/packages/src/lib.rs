@@ -779,10 +779,10 @@ pub fn reinstall_local_rpm_stream(pkg_name: &str, path: &str) -> impl Iterator<I
     lines.into_iter()
 }
 
-/// Check if a package name is installed in the package installroot.
+/// Check if a package name is installed via rpm -q.
 pub fn is_installed(package_name: &str) -> bool {
     Command::new("rpm")
-        .args(["--root", PKGROOT, "-q", "--quiet", package_name])
+        .args(["-q", package_name])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -792,9 +792,7 @@ pub fn is_installed(package_name: &str) -> bool {
 
 const PACKAGES_LIST: &str = "/var/lib/rakuos/packages.list";
 
-const PKGROOT: &str = "/var/lib/rakuos/packages";
-
-/// Read /var/lib/rakuos/packages.list — the user's package list.
+/// Read /var/lib/rakuos/packages.list — the user's overlay package list.
 /// Returns package names, skipping blank lines and comments.
 fn read_packages_list() -> Vec<String> {
     match std::fs::read_to_string(PACKAGES_LIST) {
@@ -808,10 +806,10 @@ fn read_packages_list() -> Vec<String> {
     }
 }
 
-/// Check if a single package is installed in the package installroot.
+/// Check if a single package is installed via rpm -q.
 fn rpm_is_installed(pkg: &str) -> bool {
     Command::new("rpm")
-        .args(["--root", PKGROOT, "-q", "--quiet", pkg])
+        .args(["-q", "--quiet", pkg])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)

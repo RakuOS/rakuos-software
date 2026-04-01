@@ -369,10 +369,10 @@ Item {
                 }
             }
 
-            // ── Installed Packages card ──────────────────────────────────────
+            // ── Overlay Packages card ────────────────────────────────────────
             Rectangle {
                 width: parent.width - 40
-                height: pkgrootLayout.implicitHeight + 32
+                height: overlayLayout.implicitHeight + 32
                 radius: 8
                 color: palette.button
                 border.color: palette.mid
@@ -380,7 +380,7 @@ Item {
                 visible: statusData !== null
 
                 ColumnLayout {
-                    id: pkgrootLayout
+                    id: overlayLayout
                     anchors { fill: parent; margins: 16 }
                     spacing: 8
 
@@ -388,15 +388,15 @@ Item {
                         Layout.fillWidth: true
 
                         Label {
-                            text: "Installed Packages"
+                            text: "Overlay Packages"
                             font.pixelSize: 15
                             font.bold: true
                             Layout.fillWidth: true
                         }
 
                         Label {
-                            text: (statusData && statusData.pkgroot_count)
-                                  ? statusData.pkgroot_count + " package" + (statusData.pkgroot_count !== 1 ? "s" : "")
+                            text: (statusData && statusData.overlay_count)
+                                  ? statusData.overlay_count + " package" + (statusData.overlay_count !== 1 ? "s" : "")
                                   : "0 packages"
                             color: root.dimText
                             font.pixelSize: 12
@@ -407,22 +407,22 @@ Item {
                         Button {
                             flat: true
                             implicitWidth: 110; implicitHeight: 32
-                            contentItem: Label { text: "Reset Packages"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            onClicked: pkgrootResetConfirmDlg.open()
+                            contentItem: Label { text: "Reset Overlay"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: overlayResetConfirmDlg.open()
                         }
                     }
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: palette.mid; opacity: 0.3 }
 
                     Label {
-                        text: "No packages installed."
+                        text: "No overlay packages installed."
                         color: root.dimText
-                        visible: !statusData || !statusData.pkgroot_packages || statusData.pkgroot_packages.length === 0
+                        visible: !statusData || !statusData.overlay_packages || statusData.overlay_packages.length === 0
                         font.pixelSize: 12
                     }
 
                     Repeater {
-                        model: (statusData && statusData.pkgroot_packages) ? statusData.pkgroot_packages : []
+                        model: (statusData && statusData.overlay_packages) ? statusData.overlay_packages : []
                         Label {
                             text: "• " + modelData
                             font.pixelSize: 12
@@ -430,7 +430,7 @@ Item {
                     }
 
                     Label {
-                        id: pkgrootStatusLbl
+                        id: overlayStatusLbl
                         text: ""
                         color: root.dimText
                         font.pixelSize: 11
@@ -465,22 +465,23 @@ Item {
         }
     }
 
-    // ── Package root reset confirm dialog ────────────────────────────────────
+    // ── Overlay reset confirm dialog ──────────────────────────────────────────
     Dialog {
-        id: pkgrootResetConfirmDlg
-        title: "Reset Installed Packages?"
+        id: overlayResetConfirmDlg
+        title: "Reset Overlay Packages?"
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
 
         Label {
-            text: "This will remove all installed packages and reset\nto the base image state.\nA reboot will be required."
+            text: "This will remove all overlay packages and reset\nthe system to the base image state.\nA reboot will be required."
             wrapMode: Text.WordWrap
             width: 320
         }
 
         onAccepted: {
-            backend.installApp("__reset_pkgroot__", "native");
-            pkgrootStatusLbl.text = "Resetting package root…";
+            // Reset overlay via pkexec
+            backend.installApp("__reset_overlay__", "native");
+            overlayStatusLbl.text = "Resetting overlay…";
         }
     }
 
