@@ -167,7 +167,7 @@ rm -rf "$_cdm_tmp"
 %{_sysconfdir}/xdg/autostart/rakuos-software-tray.desktop
 %{_datadir}/rakuos/
 %{electron_dir}/
-%{_libdir}/rakuos-electron-webapp/
+%{electron_webapp_dir}/
 
 %files gtk
 %{_libexecdir}/rakuos/software/rakuos-software-gtk
