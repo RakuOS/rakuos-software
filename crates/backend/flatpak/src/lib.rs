@@ -156,7 +156,46 @@ pub fn search(query: &str, limit: usize) -> Vec<FlatpakApp> {
     apps
 }
 
-/// Return list of Flatpaks with available updates.
+/// A single Flatpak update entry — includes both apps and runtimes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlatpakUpdate {
+    pub name:            String,
+    pub app_id:          String,
+    pub version:         String,
+    pub current_version: String,
+    pub runtime:         bool,
+}
+
+/// Return all available Flatpak updates (apps + runtimes) by calling
+/// `rakuos-update check-flatpak` which queries both separately.
+pub fn get_all_updates() -> Vec<FlatpakUpdate> {
+    let out = Command::new("/usr/libexec/rakuos/rakuos-update")
+        .arg("check-flatpak")
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    json["updates"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    let app_id = v["app_id"].as_str()?.to_string();
+                    if app_id.is_empty() { return None; }
+                    Some(FlatpakUpdate {
+                        name:            v["name"].as_str().unwrap_or("").to_string(),
+                        app_id,
+                        version:         v["version"].as_str().unwrap_or("").to_string(),
+                        current_version: v["current_version"].as_str().unwrap_or("").to_string(),
+                        runtime:         v["runtime"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Return list of Flatpaks with available updates (apps only, legacy).
 pub fn get_updates() -> Vec<FlatpakApp> {
     let out = Command::new("flatpak")
         .args([

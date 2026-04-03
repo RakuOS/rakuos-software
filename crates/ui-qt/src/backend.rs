@@ -858,6 +858,17 @@ pub struct SoftwareBackend {
         CACHE_READY.load(Ordering::Acquire)
     }),
 
+    // Check if main.rs wrote a "start hidden" flag (launched with --tray).
+    // Returns true once (deletes the flag) so QML knows to stay hidden at startup.
+    readStartHidden: qt_method!(fn readStartHidden(&mut self) -> bool {
+        let flag = std::env::temp_dir().join("rakuos-software-start-hidden");
+        if flag.exists() {
+            let _ = std::fs::remove_file(&flag);
+            return true;
+        }
+        false
+    }),
+
     // Check if the tray daemon wrote a "show window" flag.
     // Returns true once (deletes the flag) so QML can show + activate the window.
     checkShowRequest: qt_method!(fn checkShowRequest(&mut self) -> bool {

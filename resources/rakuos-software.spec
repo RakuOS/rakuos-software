@@ -1,4 +1,6 @@
 %global app_id org.rakuos.Software
+%global electron_dir /usr/lib/rakuos-electron
+%global ecs_version v40.7.0+wvcus
 
 Name:           rakuos-software
 Version:        1.0.0
@@ -7,6 +9,10 @@ Summary:        RakuOS Software Center
 License:        GPL-3.0-or-later
 URL:            https://rakuos.org
 Source0:        https://github.com/RakuOS/rakuos-software/archive/refs/heads/main/%{name}-main.tar.gz
+# castlabs Electron with Widevine hooks (ECS)
+Source1:        https://github.com/castlabs/electron-releases/releases/download/v40.7.0%%2Bwvcus/electron-v40.7.0+wvcus-linux-x64.zip
+# Google Chrome RPM — used only to extract WidevineCDM at build time
+Source2:        https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
 
 BuildRequires:  rust-packaging >= 21
 BuildRequires:  cargo-rpm-macros
@@ -19,6 +25,9 @@ BuildRequires:  pkgconfig(Qt6Core)
 BuildRequires:  pkgconfig(Qt6Quick)
 BuildRequires:  pkgconfig(Qt6Widgets)
 BuildRequires:  pkgconfig(dbus-1)
+BuildRequires:  unzip
+BuildRequires:  cpio
+BuildRequires:  rpm
 
 %description
 RakuOS Software Center — a modern app store for the RakuOS operating
@@ -120,6 +129,24 @@ install -m644 resources/appstream/icons/*.png \
 install -dm755 %{buildroot}%{_datadir}/rakuos-software-qt
 cp -r crates/ui-qt/qml/* \
     %{buildroot}%{_datadir}/rakuos-software-qt/
+
+# ── castlabs Electron (ECS) %{ecs_version} ───────────────────────────────────
+install -dm755 %{buildroot}%{electron_dir}
+unzip -q %{SOURCE1} -d %{buildroot}%{electron_dir}
+chmod +x %{buildroot}%{electron_dir}/electron
+
+# ── WidevineCDM — extracted from Chrome RPM at build time ────────────────────
+_cdm_tmp=$(mktemp -d)
+(cd "$_cdm_tmp" && rpm2cpio %{SOURCE2} | cpio -idm --quiet 2>/dev/null)
+if [ ! -d "$_cdm_tmp/opt/google/chrome/WidevineCdm" ]; then
+    echo "ERROR: WidevineCdm directory not found in Chrome RPM" >&2
+    exit 1
+fi
+install -dm755 %{buildroot}%{electron_dir}/WidevineCdm
+cp -r "$_cdm_tmp"/opt/google/chrome/WidevineCdm/* \
+    %{buildroot}%{electron_dir}/WidevineCdm/
+rm -rf "$_cdm_tmp"
+
 # ─── Files ───────────────────────────────────────────────────────────────────
 %files common
 %license LICENSE
@@ -131,6 +158,7 @@ cp -r crates/ui-qt/qml/* \
 %{_datadir}/applications/%{app_id}.desktop
 %{_sysconfdir}/xdg/autostart/rakuos-software-tray.desktop
 %{_datadir}/rakuos/
+%{electron_dir}/
 
 %files gtk
 %{_libexecdir}/rakuos/software/rakuos-software-gtk

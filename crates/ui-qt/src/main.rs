@@ -66,8 +66,21 @@ fn main() {
     env_logger::init();
     std::env::set_var("QML_XHR_ALLOW_FILE_READ", "1");
 
-    // Single-instance guard: if already running, signal it to show and exit.
+    // Collect any file path passed via MIME type association (%f in .desktop)
+    // Skip "--tray" and other flag arguments; take the first non-flag arg.
+    // Must be parsed BEFORE the single-instance check so we can forward it.
+    let startup_file: Option<String> = std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with('-'));
+
+    let startup_flag = std::env::temp_dir().join("rakuos-software-open-file");
+
+    // Single-instance guard: if already running, signal it to show (and open
+    // the file if one was passed) then exit.
     if instance_already_running() {
+        if let Some(ref path) = startup_file {
+            let _ = std::fs::write(&startup_flag, path);
+        }
         let _ = std::fs::write(show_flag_path(), "1");
         return;
     }
@@ -75,21 +88,22 @@ fn main() {
     write_pid_file();
     ensure_daemon_running();
 
+    // If launched with --tray, write a flag so QML starts the window hidden.
+    if std::env::args().any(|a| a == "--tray") {
+        let _ = std::fs::write(
+            std::env::temp_dir().join("rakuos-software-start-hidden"),
+            "1",
+        );
+    }
+
     qmetaobject::qml_register_type::<SoftwareBackend>(
         c"org.rakuos.software",
         1, 0,
         c"SoftwareBackend",
     );
 
-    // Collect any file path passed via MIME type association (%f in .desktop)
-    // Skip "--tray" and other flag arguments; take the first non-flag arg.
-    let startup_file: Option<String> = std::env::args()
-        .skip(1)
-        .find(|a| !a.starts_with('-'));
-
     // Write the startup file path to a temp file so QML can read it at startup
     // (QmlEngine doesn't support passing context properties easily before load).
-    let startup_flag = std::env::temp_dir().join("rakuos-software-open-file");
     if let Some(ref path) = startup_file {
         let _ = std::fs::write(&startup_flag, path);
     } else {

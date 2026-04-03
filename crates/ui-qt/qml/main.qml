@@ -7,7 +7,7 @@ import "components"
 
 ApplicationWindow {
     id: root
-    visible: true
+    visible: false   // shown explicitly in Component.onCompleted so we can center first
     width: 1280
     height: 800
     minimumWidth: 900
@@ -18,6 +18,18 @@ ApplicationWindow {
     onClosing: function(close) {
         close.accepted = false;
         root.visible = false;
+    }
+
+    // Center the window on the primary screen (index 0).
+    // Called before making the window visible so the compositor always
+    // places it in the middle of the primary display, not at a stale position.
+    function centerOnPrimaryScreen() {
+        var screens = Qt.application.screens;
+        if (!screens || screens.length === 0) return;
+        // Qt.application.screens[0] is the primary screen.
+        var s = screens[0];
+        root.x = s.virtualX + Math.round((s.width  - root.width)  / 2);
+        root.y = s.virtualY + Math.round((s.height - root.height) / 2);
     }
 
     SoftwareBackend { id: backend }
@@ -56,6 +68,11 @@ ApplicationWindow {
         if (startupPath !== "") {
             Qt.callLater(function() { root.showLocalFile(startupPath); });
         }
+        // Show window unless launched with --tray (autostart hidden mode).
+        if (!backend.readStartHidden()) {
+            root.centerOnPrimaryScreen();
+            root.visible = true;
+        }
     }
 
     // ── Show-request / quit-request poll (tray interactions) ─────────────────
@@ -70,11 +87,21 @@ ApplicationWindow {
                 return;
             }
             if (backend.checkShowRequest()) {
+                // Always re-center on the primary screen before showing so the
+                // window never restores a stale off-screen or secondary-monitor position.
+                root.centerOnPrimaryScreen();
                 root.visible = true;
                 root.raise();
                 root.requestActivate();
-                if (backend.currentPage === 7) detailLoader.active = false;
-                backend.navigate(0);   // always return to Home
+                // If a file was forwarded by a second instance, open it;
+                // otherwise navigate home.
+                var openPath = backend.readStartupFilePath();
+                if (openPath !== "") {
+                    Qt.callLater(function() { root.showLocalFile(openPath); });
+                } else {
+                    if (backend.currentPage === 7) detailLoader.active = false;
+                    backend.navigate(0);   // return to Home
+                }
             }
         }
     }

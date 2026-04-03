@@ -180,6 +180,12 @@ pub fn install(app_id: &str) -> (bool, String) {
         return (false, format!("Failed to write sidecar: {}", e));
     }
 
+    // Write custom CSS file for the launcher
+    // Path must match what the launcher derives: ~/.local/share/rakuos/webapps/{name_id}.css
+    let css_id = name_to_css_id(&app.name);
+    let css_path = install_dir().join(format!("{}.css", css_id));
+    let _ = std::fs::write(&css_path, &app.custom_css);
+
     // Write .desktop file
     if let Err(e) = write_desktop(app, &icon_path) {
         return (false, format!("Failed to write .desktop: {}", e));
@@ -205,6 +211,10 @@ pub fn uninstall(app_id: &str) -> (bool, String) {
         app_id.to_string()
     };
 
+    // Remove custom CSS file (derive id from name the same way the launcher does)
+    let css_id = name_to_css_id(&name);
+    let _ = std::fs::remove_file(install_dir().join(format!("{}.css", css_id)));
+
     let _ = std::fs::remove_file(&sidecar);
     let desktop = desktop_dir().join(format!("{}{}.desktop", DESKTOP_PREFIX, app_id));
     let _ = std::fs::remove_file(&desktop);
@@ -217,6 +227,24 @@ pub fn uninstall(app_id: &str) -> (bool, String) {
 }
 
 // ── Internals ─────────────────────────────────────────────────────────────────
+
+/// Derive the CSS file basename from a webapp name — must produce the same
+/// result as the launcher script:
+///   echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//'
+fn name_to_css_id(name: &str) -> String {
+    let mut result = String::new();
+    let mut last_hyphen = true; // start true so leading separators are dropped
+    for c in name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            result.push(c);
+            last_hyphen = false;
+        } else if !last_hyphen {
+            result.push('-');
+            last_hyphen = true;
+        }
+    }
+    result.trim_end_matches('-').to_string()
+}
 
 fn expand_catalog_data(data: &serde_json::Value) -> Vec<WebApp> {
     let sub_apps = data["apps"].as_array();

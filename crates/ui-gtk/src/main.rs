@@ -391,6 +391,10 @@ fn build_ui(app: &Application, start_hidden: bool) {
             while nav_open.pop() {}
             // Switch to Home tab
             view_stack_raise.set_visible_child_name("home");
+            // Drop and recreate the native Wayland surface so the compositor
+            // re-places the window fresh (centered) instead of restoring the
+            // stale position from when it was hidden.
+            gtk4::prelude::WidgetExt::unrealize(&window_raise);
             window_raise.present();
         }
         // Open-file request from connect_open (single-instance second launch)

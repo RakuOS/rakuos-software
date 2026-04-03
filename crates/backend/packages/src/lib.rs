@@ -199,6 +199,27 @@ pub fn get_installed() -> Result<Vec<NativeApp>> {
         }
     }
 
+    // Append locally-cached RPM installs (packages-rpm.list)
+    let already_shown: std::collections::HashSet<String> =
+        results.iter().map(|a| a.package_name.clone()).collect();
+    for pkg in &read_local_rpm_list() {
+        if already_shown.contains(pkg) {
+            continue;
+        }
+        if !rpm_is_installed(pkg) {
+            continue;
+        }
+        results.push(NativeApp {
+            id: pkg.clone(),
+            name: pkg.clone(),
+            summary: "Locally installed RPM".to_string(),
+            package_name: pkg.clone(),
+            source: "local-rpm".to_string(),
+            installed: true,
+            ..Default::default()
+        });
+    }
+
     results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     let installed_rpm = get_installed_packages()?;
     let installed_fp = get_installed_flatpaks();
@@ -791,11 +812,26 @@ pub fn is_installed(package_name: &str) -> bool {
 // ── Internals ─────────────────────────────────────────────────────────────────
 
 const PACKAGES_LIST: &str = "/var/lib/rakuos/packages.list";
+const LOCAL_RPM_LIST: &str = "/var/lib/rakuos/packages-rpm.list";
 
 /// Read /var/lib/rakuos/packages.list — the user's overlay package list.
 /// Returns package names, skipping blank lines and comments.
 fn read_packages_list() -> Vec<String> {
     match std::fs::read_to_string(PACKAGES_LIST) {
+        Ok(content) => content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(String::from)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Read /var/lib/rakuos/packages-rpm.list — locally cached .rpm installs.
+/// Returns package names, skipping blank lines and comments.
+fn read_local_rpm_list() -> Vec<String> {
+    match std::fs::read_to_string(LOCAL_RPM_LIST) {
         Ok(content) => content
             .lines()
             .map(|l| l.trim())
