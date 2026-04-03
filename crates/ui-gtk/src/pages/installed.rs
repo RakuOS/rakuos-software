@@ -688,8 +688,9 @@ fn build_webapp_row(app: &WebApp, nav: Arc<NavigationView>) -> Widget {
         .halign(Align::Start)
         .css_classes(vec!["heading".to_string()])
         .build();
+    let display_url = if app.website.is_empty() { &app.url } else { &app.website };
     let url_lbl = Label::builder()
-        .label(&app.url)
+        .label(display_url)
         .halign(Align::Start)
         .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
         .build();

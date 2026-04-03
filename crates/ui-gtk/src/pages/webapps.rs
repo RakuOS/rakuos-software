@@ -207,8 +207,9 @@ fn build_webapp_detail(app: &WebApp) -> Widget {
         .halign(Align::Start)
         .wrap(true)
         .build();
+    let display_url = if app.website.is_empty() { &app.url } else { &app.website };
     let url_lbl = Label::builder()
-        .label(&app.url)
+        .label(display_url)
         .halign(Align::Start)
         .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
         .build();

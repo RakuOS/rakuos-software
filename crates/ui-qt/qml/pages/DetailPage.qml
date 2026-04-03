@@ -608,7 +608,7 @@ Item {
                             var cards = [];
                             if (displayApp.url_homepage) cards.push({ label: "Website",   value: displayApp.url_homepage });
                             if (app && app.source === "webapp" && app.url)
-                                cards.push({ label: "App URL", value: app.url });
+                                cards.push({ label: "App URL", value: (app.website || app.url) });
                             if (displayApp.package_name && app && app.source !== "webapp" && app.source !== "appimage")
                                 cards.push({ label: displayApp.source === "flatpak" ? "Flatpak ID" : "Package", value: displayApp.package_name });
                             if (displayApp.developer)    cards.push({ label: "Developer", value: displayApp.developer });

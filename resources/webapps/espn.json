@@ -3,13 +3,13 @@
   "name": "ESPN",
   "url": "https://www.espn.com/watch",
   "website": "https://www.espn.com",
-  "summary": "Movies and TV shows on demand",
+  "summary": "Stream Sports, TV shows, WWE PLEs and more.",
   "description": "Stream Sports, TV shows, WWE PLEs and more.",
   "icon": "espn.png",
   "icon_url": "https://cdn2.steamgriddb.com/icon_thumb/5d5efce38d2d064f803f3c11fff8bf21.png",
   "screenshots": [
-  "https://static1.anpoimages.com/wordpress/wp-content/uploads/2024/06/espn-plus-home-page-redirect-2.jpg"
-],
+    "https://static1.anpoimages.com/wordpress/wp-content/uploads/2024/06/espn-plus-home-page-redirect-2.jpg"
+  ],
   "categories": ["AudioVideo", "Video"],
   "keywords": ["espn", "sports", "streaming", "tv", "shows"]
 }

@@ -1,13 +1,24 @@
 {
   "id": "microsoft-365",
   "name": "Microsoft 365",
-  "url": "https://www.microsoft365.com",
+  "url": "https://m365.cloud.microsoft/search/",
   "website": "https://www.microsoft365.com",
   "summary": "Microsoft's cloud productivity suite",
   "description": "Microsoft 365 brings you Word, Excel, PowerPoint, Outlook, Teams, OneNote and OneDrive — all in your browser with no install required.",
   "icon_url": "https://i.pinimg.com/originals/84/95/cf/8495cf770fdcb80355dc940930c0d9a8.png",
   "categories": ["Office", "Network"],
-  "keywords": ["microsoft", "office", "365", "word", "excel", "powerpoint", "outlook", "teams", "onedrive", "productivity"],
+  "keywords": [
+    "microsoft",
+    "office",
+    "365",
+    "word",
+    "excel",
+    "powerpoint",
+    "outlook",
+    "teams",
+    "onedrive",
+    "productivity"
+  ],
   "apps": [
     {
       "id": "microsoft-word",
