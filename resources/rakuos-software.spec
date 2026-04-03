@@ -1,5 +1,6 @@
 %global app_id org.rakuos.Software
 %global electron_dir /usr/lib/rakuos-electron
+%global electron_webapp_dir /usr/lib/rakuos-electron-webapp
 %global ecs_version v40.7.0+wvcus
 
 Name:           rakuos-software
@@ -110,9 +111,9 @@ install -Dm644 resources/rakuos-software-tray.desktop \
 # Electron Web app
 install -dm755 %{buildroot}%{_libdir}/rakuos-electron-webapp
 install -m644 resources/rakuos-electron-webapp/main.js \
-    %{buildroot}%{_libdir}/rakuos-electron-webapp/
+    %{buildroot}%{electron_webapp_dir}/
 install -m644 resources/rakuos-electron-webapp/package.json \
-    %{buildroot}%{_libdir}/rakuos-electron-webapp/
+    %{buildroot}%{electron_webapp_dir}/
 
 # Web app catalog
 install -dm755 %{buildroot}%{_datadir}/rakuos/webapps
