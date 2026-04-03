@@ -138,9 +138,6 @@ pub fn get_available() -> Result<Vec<NativeApp>> {
 /// Only returns packages the user explicitly added — NOT the base OS image packages.
 pub fn get_installed() -> Result<Vec<NativeApp>> {
     let overlay_pkgs = read_packages_list();
-    if overlay_pkgs.is_empty() {
-        return Ok(Vec::new());
-    }
 
     let appstream = get_appstream();
 
@@ -209,13 +206,24 @@ pub fn get_installed() -> Result<Vec<NativeApp>> {
         if !rpm_is_installed(pkg) {
             continue;
         }
+        let icon_path = find_local_rpm_icon(pkg);
+        // Try to get a friendly display name from rpm metadata
+        let display_name = Command::new("rpm")
+            .args(["-q", "--queryformat", "%{NAME}", pkg])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| pkg.clone());
         results.push(NativeApp {
             id: pkg.clone(),
-            name: pkg.clone(),
+            name: display_name,
             summary: "Locally installed RPM".to_string(),
             package_name: pkg.clone(),
             source: "local-rpm".to_string(),
             installed: true,
+            icon_path,
             ..Default::default()
         });
     }
@@ -826,6 +834,72 @@ fn read_packages_list() -> Vec<String> {
             .collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Try to find an icon for a locally-installed RPM package.
+/// Checks (in order):
+///   1. Icon= field from an installed .desktop file via `rpm -ql`
+///   2. /usr/share/icons/hicolor/{size}/apps/{name}.png (by package name)
+///   3. /usr/share/pixmaps/{name}.{ext}
+fn find_local_rpm_icon(pkg: &str) -> String {
+    // Get list of installed files for this package
+    let files = Command::new("rpm")
+        .args(["-ql", pkg])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // Look for an installed .desktop file and extract Icon=
+    let mut icon_name = String::new();
+    for line in files.lines() {
+        let line = line.trim();
+        if line.ends_with(".desktop") && line.starts_with("/usr/share/applications/") {
+            if let Ok(content) = std::fs::read_to_string(line) {
+                for dline in content.lines() {
+                    if let Some(val) = dline.strip_prefix("Icon=") {
+                        icon_name = val.trim().to_string();
+                        break;
+                    }
+                }
+            }
+            if !icon_name.is_empty() {
+                break;
+            }
+        }
+    }
+
+    // If no icon name found from .desktop, fall back to pkg name
+    if icon_name.is_empty() {
+        icon_name = pkg.to_string();
+    }
+
+    // Search hicolor theme for common sizes (largest first)
+    for size in &["256x256", "128x128", "64x64", "48x48", "32x32"] {
+        for ext in &["png", "svg", "xpm"] {
+            let path = format!("/usr/share/icons/hicolor/{}/apps/{}.{}", size, icon_name, ext);
+            if std::path::Path::new(&path).exists() {
+                return path;
+            }
+        }
+    }
+
+    // Search pixmaps
+    for ext in &["png", "svg", "xpm"] {
+        let path = format!("/usr/share/pixmaps/{}.{}", icon_name, ext);
+        if std::path::Path::new(&path).exists() {
+            return path;
+        }
+    }
+
+    // Also try hicolor scalable
+    let scalable = format!("/usr/share/icons/hicolor/scalable/apps/{}.svg", icon_name);
+    if std::path::Path::new(&scalable).exists() {
+        return scalable;
+    }
+
+    String::new()
 }
 
 /// Read /var/lib/rakuos/packages-rpm.list — locally cached .rpm installs.
