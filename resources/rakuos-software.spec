@@ -109,7 +109,7 @@ install -Dm644 resources/rakuos-software-tray.desktop \
     %{buildroot}%{_sysconfdir}/xdg/autostart/rakuos-software-tray.desktop
 
 # Electron Web app
-install -dm755 %{buildroot}%{_libdir}/rakuos-electron-webapp
+install -dm755 %{buildroot}%{electron_webapp_dir}
 install -m644 resources/rakuos-electron-webapp/main.js \
     %{buildroot}%{electron_webapp_dir}/
 install -m644 resources/rakuos-electron-webapp/package.json \
