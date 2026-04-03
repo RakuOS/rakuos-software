@@ -107,6 +107,13 @@ install -Dm644 resources/rakuos-software.desktop \
 install -Dm644 resources/rakuos-software-tray.desktop \
     %{buildroot}%{_sysconfdir}/xdg/autostart/rakuos-software-tray.desktop
 
+# Electron Web app
+install -dm755 %{buildroot}%{_libdir}/rakuos-electron-webapp
+install -m644 resources/rakuos-electron-webapp/main.js \
+    %{buildroot}%{_libdir}/rakuos-electron-webapp/
+install -m644 resources/rakuos-electron-webapp/package.json \
+    %{buildroot}%{_libdir}/rakuos-electron-webapp/
+
 # Web app catalog
 install -dm755 %{buildroot}%{_datadir}/rakuos/webapps
 install -m644 resources/webapps/*.json \
@@ -159,6 +166,7 @@ rm -rf "$_cdm_tmp"
 %{_sysconfdir}/xdg/autostart/rakuos-software-tray.desktop
 %{_datadir}/rakuos/
 %{electron_dir}/
+%{_libdir}/rakuos-electron-webapp/
 
 %files gtk
 %{_libexecdir}/rakuos/software/rakuos-software-gtk
