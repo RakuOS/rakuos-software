@@ -4,7 +4,7 @@ use gtk4::prelude::*;
 use gtk4::{glib, Align, Box as GBox, Button, Label, Orientation, ScrolledWindow, Widget};
 use libadwaita::prelude::*;
 use libadwaita::{Carousel, Dialog, HeaderBar, NavigationPage, NavigationView, ToolbarView};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -20,21 +20,27 @@ use super::icon_helper::load_app_icon;
 // closures synchronously and releasing every widget ref they held.
 
 thread_local! {
-    static ACTIVE_SOURCES: RefCell<Vec<glib::SourceId>> = const { RefCell::new(Vec::new()) };
+    // Shared cancellation flag for the currently-open detail page.
+    // Timers clone this Rc and check it on each tick; when cancel_current_detail()
+    // is called it sets the flag to true and replaces it with a fresh one so the
+    // next page gets its own independent flag.
+    static CANCEL_FLAG: RefCell<Rc<Cell<bool>>> =
+        RefCell::new(Rc::new(Cell::new(false)));
 }
 
-fn track(id: glib::SourceId) {
-    ACTIVE_SOURCES.with(|s| s.borrow_mut().push(id));
+/// Return a clone of the current page's cancellation flag.
+/// Pass one clone into each long-running timer so it can stop itself early.
+fn detail_cancel_flag() -> Rc<Cell<bool>> {
+    CANCEL_FLAG.with(|f| Rc::clone(&f.borrow()))
 }
 
-/// Force-cancel all timers belonging to the current detail page.
+/// Signal all running timers for the current detail page to stop,
+/// then install a fresh flag for the next page.
 /// Safe to call even when no detail page is open.
 pub fn cancel_current_detail() {
-    ACTIVE_SOURCES.with(|sources| {
-        for id in sources.borrow_mut().drain(..) {
-            // Returns false (no-op) if the source already completed — that is fine.
-            let _ = id.remove();
-        }
+    CANCEL_FLAG.with(|f| {
+        f.borrow().set(true);
+        *f.borrow_mut() = Rc::new(Cell::new(false));
     });
 }
 
@@ -413,8 +419,9 @@ fn build(
     let screenshots_box_t = screenshots_box.clone();
     let addons_store_t = Rc::clone(&addons_store);
 
-    // Tracked: force-removed by cancel_current_detail() when navigating away.
-    track(glib::timeout_add_local(Duration::from_millis(80), move || {
+    let cancel = detail_cancel_flag();
+    glib::timeout_add_local(Duration::from_millis(80), move || {
+        if cancel.get() { return glib::ControlFlow::Break; }
         match rx.try_recv() {
             Ok((app_data, reviews)) => {
                 if let Some(app) = app_data {
@@ -587,7 +594,7 @@ fn build(
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
             Err(_) => glib::ControlFlow::Break,
         }
-    }));
+    });
 
     toolbar.set_content(Some(&scroll));
     nav_page.set_child(Some(&toolbar));
@@ -716,8 +723,9 @@ fn load_screenshots(carousel: &Carousel, urls: &[String]) {
         });
 
         let pic_c = picture.clone();
-        // Tracked: force-removed by cancel_current_detail() on page exit.
-        track(glib::timeout_add_local(Duration::from_millis(100), move || {
+        let cancel_ss = detail_cancel_flag();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            if cancel_ss.get() { return glib::ControlFlow::Break; }
             match srx.try_recv() {
                 Ok(Some(b)) => {
                     let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
@@ -733,7 +741,7 @@ fn load_screenshots(carousel: &Carousel, urls: &[String]) {
                 Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                 Err(_) => glib::ControlFlow::Break,
             }
-        }));
+        });
 
         carousel.append(&picture);
     }
