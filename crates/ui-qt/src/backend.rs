@@ -587,11 +587,16 @@ pub struct SoftwareBackend {
 
             let (mut child, ok) = match source.as_str() {
                 "flatpak" => {
-                    let c = Command::new("flatpak")
-                        .args(["install", "--noninteractive", "-y", &id])
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn();
+                    // "__upgrade_all__" upgrades everything (including required new runtimes).
+                    // Individual IDs may include a branch spec (e.g. "org.gnome.Platform//50")
+                    // for new runtime installs — flatpak install handles both cases.
+                    let mut cmd = Command::new("flatpak");
+                    if id == "__upgrade_all__" {
+                        cmd.args(["update", "--noninteractive", "-y"]);
+                    } else {
+                        cmd.args(["install", "--noninteractive", "-y", &id]);
+                    }
+                    let c = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
                     match c {
                         Ok(child) => (Some(child), true),
                         Err(e)    => { append_log(&e.to_string()); (None, false) }

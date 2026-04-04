@@ -164,6 +164,13 @@ pub struct FlatpakUpdate {
     pub version:         String,
     pub current_version: String,
     pub runtime:         bool,
+    /// True when this entry is a new runtime branch to install, not an update to an existing one.
+    /// e.g. org.gnome.Platform//50 required by an app update, when only //49 is installed.
+    #[serde(default)]
+    pub needs_install:   bool,
+    /// The remote to install from when needs_install is true.
+    #[serde(default)]
+    pub install_remote:  String,
 }
 
 /// Return all available Flatpak updates (apps + runtimes) by calling
@@ -188,6 +195,8 @@ pub fn get_all_updates() -> Vec<FlatpakUpdate> {
                         version:         v["version"].as_str().unwrap_or("").to_string(),
                         current_version: v["current_version"].as_str().unwrap_or("").to_string(),
                         runtime:         v["runtime"].as_bool().unwrap_or(false),
+                        needs_install:   v["needs_install"].as_bool().unwrap_or(false),
+                        install_remote:  v["remote"].as_str().unwrap_or("").to_string(),
                     })
                 })
                 .collect()
@@ -258,6 +267,32 @@ pub fn update_stream() -> impl Iterator<Item = String> {
 /// Update a single Flatpak. Streams output lines.
 pub fn update_single_stream(app_id: &str) -> impl Iterator<Item = String> + '_ {
     run_flatpak_stream(&["update", "--noninteractive", "-y", app_id])
+}
+
+/// Install a new Flatpak runtime branch that is not yet installed.
+/// e.g. install_ref_stream("flathub", "org.gnome.Platform", "50")
+/// runs: flatpak install --noninteractive -y [remote] org.gnome.Platform//50
+pub fn install_ref_stream(remote: &str, app_id: &str, branch: &str) -> impl Iterator<Item = String> {
+    let ref_spec = format!("{}//{}", app_id, branch);
+    let mut cmd = Command::new("flatpak");
+    if remote.is_empty() {
+        cmd.args(["install", "--noninteractive", "-y"]);
+    } else {
+        cmd.args(["install", "--noninteractive", "-y", remote]);
+    }
+    cmd.arg(&ref_spec);
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn flatpak");
+    let stdout = child.stdout.take().unwrap();
+    let lines: Vec<String> = BufReader::new(stdout)
+        .lines()
+        .map_while(Result::ok)
+        .collect();
+    let code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    lines.into_iter().chain(std::iter::once(format!("__done__{}", code)))
 }
 
 /// Install from a local .flatpak bundle (system-wide via pkexec).

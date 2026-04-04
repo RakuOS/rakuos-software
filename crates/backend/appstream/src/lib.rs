@@ -541,7 +541,12 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                         app.description = text;
                         in_description = false;
                     } else if in_pkgname && app.package_name.is_empty() {
-                        app.package_name = text;
+                        // Strip DNF5 rename-transition suffixes (e.g. "zed-rename-zeditor" → "zed")
+                        app.package_name = if let Some(pos) = text.find("-rename-") {
+                            text[..pos].to_string()
+                        } else {
+                            text
+                        };
                         in_pkgname = false;
                     } else if in_developer && app.developer.is_empty() {
                         app.developer = text;

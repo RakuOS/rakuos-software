@@ -698,13 +698,13 @@ Item {
                                         Rectangle {
                                             visible: modelData.pkg_type === "flatpak"
                                             radius: 3
-                                            color: "#1a237e"
+                                            color: modelData.needs_install ? "#1b5e20" : "#1a237e"
                                             width: flatpakLbl.implicitWidth + 8
                                             height: 16
                                             Label {
                                                 id: flatpakLbl
                                                 anchors.centerIn: parent
-                                                text: "Flatpak"
+                                                text: modelData.needs_install ? "New Install" : "Flatpak"
                                                 font.pixelSize: 9
                                                 color: "white"
                                             }
@@ -727,7 +727,7 @@ Item {
                                 }
 
                                 Button {
-                                    text: "Update"
+                                    text: (modelData.needs_install && modelData.pkg_type === "flatpak") ? "Install" : "Update"
                                     flat: true
                                     visible: !rowUpdating
                                     onClicked: {
@@ -737,9 +737,14 @@ Item {
                                         updatesPage.pendingOpIsCheck = false;
                                         updatesPage.updating = true;
                                         if (pkg.pkg_type === "flatpak") {
-                                            // Individual flatpak update — track by specific app_id
                                             updatesPage.activeUpdateType = pkgId;
-                                            backend.installApp(pkg.app_id || pkg.id || "", "flatpak");
+                                            if (pkg.needs_install) {
+                                                // New runtime branch: pass app_id//branch so flatpak installs the right ref
+                                                var installRef = (pkg.app_id || "") + "//" + (pkg.version || "");
+                                                backend.installApp(installRef, "flatpak");
+                                            } else {
+                                                backend.installApp(pkg.app_id || pkg.id || "", "flatpak");
+                                            }
                                         } else {
                                             // RPM individual update upgrades ALL packages — mark all rpm rows
                                             updatesPage.activeUpdateType = "packages";

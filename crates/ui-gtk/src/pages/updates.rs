@@ -850,9 +850,13 @@ fn build_flatpak_section(title: &str, flatpaks: &[FlatpakUpdate], state: UpdateS
         std::thread::spawn(move || {
             let mut all_ok = true;
             for fp in &fps {
-                let id = fp.app_id.clone();
-                let ok = rakuos_flatpak::update_single_stream(&id)
-                    .any(|l| l.starts_with("__done__0"));
+                let ok = if fp.needs_install {
+                    rakuos_flatpak::install_ref_stream(&fp.install_remote, &fp.app_id, &fp.version)
+                        .any(|l| l.starts_with("__done__0"))
+                } else {
+                    rakuos_flatpak::update_single_stream(&fp.app_id)
+                        .any(|l| l.starts_with("__done__0"))
+                };
                 if !ok { all_ok = false; }
             }
             let _ = tx.send(all_ok);
@@ -951,8 +955,9 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
     info.append(&badge_row);
     item.append(&info);
 
+    let btn_label = if fp.needs_install { "Install" } else { "Update" };
     let update_btn = Button::builder()
-        .label("Update")
+        .label(btn_label)
         .valign(Align::Center)
         .build();
     item.append(&update_btn);
@@ -963,8 +968,11 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
         .build();
     row.append(&progress);
 
-    // Wire individual Update button
-    let app_id  = fp.app_id.clone();
+    // Wire individual Update/Install button
+    let app_id       = fp.app_id.clone();
+    let fp_version   = fp.version.clone();
+    let fp_remote    = fp.install_remote.clone();
+    let needs_install = fp.needs_install;
     let prog_c  = progress.clone();
     let btn_ref = update_btn.clone();
     let state_c = state.clone();
@@ -974,15 +982,22 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
         if state_c.is_running() { return; }
         state_c.start(&app_id);
         btn.set_sensitive(false);
-        btn.set_label("Updating…");
+        btn.set_label(if needs_install { "Installing…" } else { "Updating…" });
         prog_c.set_fraction(0.0);
         prog_c.set_visible(true);
 
-        let id = app_id.clone();
+        let id      = app_id.clone();
+        let version = fp_version.clone();
+        let remote  = fp_remote.clone();
         let (tx, rx) = mpsc::channel::<bool>();
         std::thread::spawn(move || {
             let mut ok = false;
-            for line in rakuos_flatpak::update_single_stream(&id) {
+            let iter: Box<dyn Iterator<Item = String>> = if needs_install {
+                Box::new(rakuos_flatpak::install_ref_stream(&remote, &id, &version))
+            } else {
+                Box::new(rakuos_flatpak::update_single_stream(&id))
+            };
+            for line in iter {
                 if let Some(code) = line.strip_prefix("__done__") {
                     ok = code.trim() == "0";
                 }
