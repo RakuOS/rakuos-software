@@ -476,14 +476,14 @@ Item {
         id: overlayResetConfirmDlg
         title: "Reset Overlay"
         modal: true
-        standardButtons: Dialog.Cancel
-        width: 420
+        standardButtons: Dialog.NoButton
+        width: 460
 
         property string pendingMode: ""
 
         Column {
-            spacing: 16
-            width: 380
+            spacing: 12
+            width: overlayResetConfirmDlg.width - 48
 
             Label {
                 width: parent.width
@@ -496,46 +496,37 @@ Item {
             // Soft Reset option
             Rectangle {
                 width: parent.width
-                height: softCol.implicitHeight + 20
+                height: softContent.implicitHeight + 20
                 radius: 6
                 color: palette.button
                 border.color: palette.mid
                 border.width: 1
 
                 Column {
-                    id: softCol
-                    anchors { fill: parent; margins: 10 }
-                    spacing: 6
+                    id: softContent
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                    spacing: 8
 
-                    RowLayout {
+                    Label { text: "Soft Reset (Rebuild)"; font.pixelSize: 13; font.bold: true }
+                    Label {
                         width: parent.width
-
-                        Column {
-                            Layout.fillWidth: true
-                            spacing: 2
-                            Label { text: "Soft Reset (Rebuild)"; font.pixelSize: 13; font.bold: true }
-                            Label {
-                                width: parent.width
-                                text: "Wipes the overlay and reinstalls all packages from your packages list on next boot. Your installed package list is preserved."
-                                wrapMode: Text.WordWrap
-                                color: root.dimText
-                                font.pixelSize: 11
-                            }
-                        }
-
-                        Button {
-                            text: "Soft Reset"
-                            background: Rectangle { color: "#1565c0"; radius: 4 }
-                            contentItem: Label { text: "Soft Reset"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            onClicked: {
-                                overlayResetConfirmDlg.pendingMode = "soft";
-                                overlayResetConfirmDlg.close();
-                                overlayResetRunning = true;
-                                overlayResetSuccess = false;
-                                overlayStatusLbl.text = "Running soft reset…";
-                                overlayResetPollTimer.start();
-                                backend.resetOverlay("soft");
-                            }
+                        text: "Wipes the overlay and reinstalls all packages from your packages list on next boot. Your installed package list is preserved."
+                        wrapMode: Text.WordWrap
+                        color: root.dimText
+                        font.pixelSize: 11
+                    }
+                    Button {
+                        width: parent.width
+                        implicitHeight: 32
+                        background: Rectangle { color: "#1565c0"; radius: 4 }
+                        contentItem: Label { text: "Soft Reset"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: {
+                            overlayResetConfirmDlg.close();
+                            overlayResetRunning = true;
+                            overlayResetSuccess = false;
+                            overlayStatusLbl.text = "Running soft reset…";
+                            overlayResetPollTimer.start();
+                            backend.resetOverlay("soft");
                         }
                     }
                 }
@@ -544,49 +535,48 @@ Item {
             // Full Reset option
             Rectangle {
                 width: parent.width
-                height: fullCol.implicitHeight + 20
+                height: fullContent.implicitHeight + 20
                 radius: 6
                 color: palette.button
                 border.color: "#b71c1c"
                 border.width: 1
 
                 Column {
-                    id: fullCol
-                    anchors { fill: parent; margins: 10 }
-                    spacing: 6
+                    id: fullContent
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                    spacing: 8
 
-                    RowLayout {
+                    Label { text: "Full Reset (Stock)"; font.pixelSize: 13; font.bold: true; color: "#e53935" }
+                    Label {
                         width: parent.width
-
-                        Column {
-                            Layout.fillWidth: true
-                            spacing: 2
-                            Label { text: "Full Reset (Stock)"; font.pixelSize: 13; font.bold: true; color: "#e53935" }
-                            Label {
-                                width: parent.width
-                                text: "Completely wipes the overlay and your packages list. The system returns to the base image state. All installed packages will be removed."
-                                wrapMode: Text.WordWrap
-                                color: root.dimText
-                                font.pixelSize: 11
-                            }
-                        }
-
-                        Button {
-                            text: "Full Reset"
-                            background: Rectangle { color: "#b71c1c"; radius: 4 }
-                            contentItem: Label { text: "Full Reset"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            onClicked: {
-                                overlayResetConfirmDlg.pendingMode = "full";
-                                overlayResetConfirmDlg.close();
-                                overlayResetRunning = true;
-                                overlayResetSuccess = false;
-                                overlayStatusLbl.text = "Running full reset…";
-                                overlayResetPollTimer.start();
-                                backend.resetOverlay("full");
-                            }
+                        text: "Completely wipes the overlay and your packages list. The system returns to the base image state. All installed packages will be removed."
+                        wrapMode: Text.WordWrap
+                        color: root.dimText
+                        font.pixelSize: 11
+                    }
+                    Button {
+                        width: parent.width
+                        implicitHeight: 32
+                        background: Rectangle { color: "#b71c1c"; radius: 4 }
+                        contentItem: Label { text: "Full Reset"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: {
+                            overlayResetConfirmDlg.close();
+                            overlayResetRunning = true;
+                            overlayResetSuccess = false;
+                            overlayStatusLbl.text = "Running full reset…";
+                            overlayResetPollTimer.start();
+                            backend.resetOverlay("full");
                         }
                     }
                 }
+            }
+
+            // Cancel button
+            Button {
+                width: parent.width
+                implicitHeight: 32
+                text: "Cancel"
+                onClicked: overlayResetConfirmDlg.close()
             }
         }
     }
