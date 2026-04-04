@@ -18,8 +18,12 @@ Item {
     property bool inQueueMode: false
     property bool pendingOpIsCheck: false
     property string currentOpLabel: ""
-    // Which update type is actively running: "packages", "flatpak", "image", or a specific pkg id
+    // Which update type is actively running: "packages", "flatpak", "image", or a specific app_id
     property string activeUpdateType: ""
+
+    // Tracks successfully completed updates so rows can disappear.
+    // Keys: specific app_id, "__packages__" for all rpm rows, "__flatpak__" for all flatpak rows.
+    property var completedUpdates: ({})
 
     // On activate: read daemon cache — don't trigger our own check.
     // If the cache doesn't exist yet the daemon is still doing its first
@@ -57,6 +61,7 @@ Item {
         rebootRequired = false;
         pendingOpIsCheck = true;
         inQueueMode = false;
+        completedUpdates = ({});
         backend.checkUpdates();
         pollTimer.start();
     }
@@ -72,6 +77,13 @@ Item {
                 pollTimer.stop();
                 if (inQueueMode) {
                     var finishedStep = updateQueue[queueStep];
+                    // Record batch completion for row hiding
+                    if (backend.opResult === 1) {
+                        var co = completedUpdates;
+                        if (finishedStep === "packages") co["__packages__"] = true;
+                        else if (finishedStep === "flatpak") co["__flatpak__"] = true;
+                        completedUpdates = co;
+                    }
                     queueStep++;
                     if (queueStep < updateQueue.length) {
                         _runQueueStep();
@@ -84,12 +96,12 @@ Item {
                         activeUpdateType = "";
                         if (finishedStep === "image") {
                             imageUpdateDone = true;
-                        } else {
-                            _loadFromCache();
                         }
+                        // Don't reload cache — rows already hidden via completedUpdates
                     }
                 } else {
-                    var wasImageUpdate = activeUpdateType === "image";
+                    var savedType = activeUpdateType;
+                    var wasImageUpdate = savedType === "image";
                     checking = false;
                     updating = false;
                     currentOpLabel = "";
@@ -103,8 +115,17 @@ Item {
                         }
                     } else if (wasImageUpdate) {
                         imageUpdateDone = true;
-                    } else {
-                        _loadFromCache();
+                    } else if (backend.opResult === 1) {
+                        // Individual or section update succeeded — record for row hiding
+                        var co2 = completedUpdates;
+                        if (savedType === "packages") {
+                            co2["__packages__"] = true;
+                        } else if (savedType === "flatpak") {
+                            co2["__flatpak__"] = true;
+                        } else if (savedType) {
+                            co2[savedType] = true;
+                        }
+                        completedUpdates = co2;
                     }
                 }
             }
@@ -596,12 +617,27 @@ Item {
                         if (!updatesPage.updating) return false;
                         var t = updatesPage.activeUpdateType;
                         if (!t) return false;
-                        // Batch type match (queue / section Update All)
+                        // All RPM rows light up when upgrading packages batch
+                        if (t === "packages" && modelData.pkg_type === "rpm") return true;
+                        // All flatpak rows light up when upgrading flatpak batch
+                        if (t === "flatpak" && modelData.pkg_type === "flatpak") return true;
+                        // Legacy type match
                         if (t === modelData.pkg_type) return true;
                         // Individual update: matched by id
                         if (_pkgId && t === _pkgId) return true;
                         return false;
                     }
+                    // Has this row's update completed successfully?
+                    readonly property bool rowCompleted: {
+                        var cu = updatesPage.completedUpdates;
+                        if (!cu) return false;
+                        if (_pkgId && cu[_pkgId]) return true;
+                        if (modelData.pkg_type === "rpm" && cu["__packages__"]) return true;
+                        if (modelData.pkg_type === "flatpak" && cu["__flatpak__"]) return true;
+                        return false;
+                    }
+
+                    visible: !rowCompleted
 
                     Rectangle {
                         width: parent.width
@@ -697,13 +733,16 @@ Item {
                                     onClicked: {
                                         var pkg = modelData;
                                         var pkgId = pkg.app_id || pkg.id || pkg.name || "";
-                                        updatesPage.activeUpdateType = pkgId;
                                         updatesPage.inQueueMode = false;
                                         updatesPage.pendingOpIsCheck = false;
                                         updatesPage.updating = true;
                                         if (pkg.pkg_type === "flatpak") {
+                                            // Individual flatpak update — track by specific app_id
+                                            updatesPage.activeUpdateType = pkgId;
                                             backend.installApp(pkg.app_id || pkg.id || "", "flatpak");
                                         } else {
+                                            // RPM individual update upgrades ALL packages — mark all rpm rows
+                                            updatesPage.activeUpdateType = "packages";
                                             backend.upgradePackages();
                                         }
                                         pollTimer.start();

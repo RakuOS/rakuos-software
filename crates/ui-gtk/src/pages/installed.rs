@@ -226,7 +226,75 @@ fn build_runtime_row(rt: &FlatpakRuntime) -> Widget {
         .build());
     row.append(&info);
 
+    let uninstall_btn = Button::builder()
+        .label("Uninstall")
+        .valign(Align::Center)
+        .css_classes(vec!["destructive-action".to_string()])
+        .build();
+
+    let app_id = rt.app_id.clone();
+    let rt_name = rt.name.clone();
     let list_row = gtk4::ListBoxRow::new();
+    let list_row_c = list_row.clone();
+
+    uninstall_btn.connect_clicked(move |btn| {
+        let btn_c = btn.clone();
+        let id_c = app_id.clone();
+        let name_c = rt_name.clone();
+        let row_c = list_row_c.clone();
+
+        if let Some(root) = btn.root() {
+            if let Ok(win) = root.downcast::<gtk4::Window>() {
+                let dialog = libadwaita::MessageDialog::builder()
+                    .transient_for(&win)
+                    .heading(&format!("Uninstall {}?", name_c))
+                    .body("This runtime will be removed. Apps depending on it may stop working.")
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("uninstall", "Uninstall");
+                dialog.set_response_appearance(
+                    "uninstall",
+                    libadwaita::ResponseAppearance::Destructive,
+                );
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+
+                dialog.connect_response(None, move |_d, response| {
+                    if response == "uninstall" {
+                        btn_c.set_sensitive(false);
+                        btn_c.set_label("Removing…");
+                        let pkg = id_c.clone();
+                        let row_cc = row_c.clone();
+                        let btn_cc = btn_c.clone();
+                        let (tx, rx) = mpsc::channel::<bool>();
+                        std::thread::spawn(move || {
+                            let ok = rakuos_flatpak::force_uninstall_stream(&pkg)
+                                .any(|l| l.starts_with("__done__0"));
+                            let _ = tx.send(ok);
+                        });
+                        glib::timeout_add_local(Duration::from_millis(50), move || {
+                            match rx.try_recv() {
+                                Ok(ok) => {
+                                    if ok {
+                                        row_cc.set_visible(false);
+                                    } else {
+                                        btn_cc.set_sensitive(true);
+                                        btn_cc.set_label("Uninstall");
+                                    }
+                                    glib::ControlFlow::Break
+                                }
+                                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                                Err(_) => glib::ControlFlow::Break,
+                            }
+                        });
+                    }
+                });
+                dialog.present();
+            }
+        }
+    });
+
+    row.append(&uninstall_btn);
     list_row.set_child(Some(&row));
     list_row.set_activatable(false);
     list_row.upcast()

@@ -284,9 +284,13 @@ Item {
                         Repeater {
                             model: installedPage.flatpakRuntimes
                             delegate: Rectangle {
+                                id: rtRow
                                 width: parent.width
                                 height: 52
                                 color: "transparent"
+                                property bool removing: false
+                                property bool removed: false
+                                visible: !removed
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -320,6 +324,32 @@ Item {
                                             width: parent.width
                                         }
                                     }
+
+                                    Button {
+                                        visible: !rtRow.removing
+                                        flat: true
+                                        implicitWidth: 80
+                                        implicitHeight: 32
+                                        contentItem: Label {
+                                            text: "Uninstall"
+                                            color: "#e53935"
+                                            font.pixelSize: 12
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                        onClicked: {
+                                            rtRow.removing = true
+                                            backend.removeApp(modelData.app_id || "", "flatpak-runtime")
+                                            rtRemoveTimer.start()
+                                        }
+                                    }
+
+                                    BusyIndicator {
+                                        running: rtRow.removing
+                                        visible: rtRow.removing
+                                        implicitWidth: 20
+                                        implicitHeight: 20
+                                    }
                                 }
 
                                 Rectangle {
@@ -331,6 +361,22 @@ Item {
                                     height: 1
                                     color: palette.mid
                                     opacity: 0.15
+                                }
+
+                                Timer {
+                                    id: rtRemoveTimer
+                                    interval: 400
+                                    repeat: true
+                                    onTriggered: {
+                                        backend.pollOp()
+                                        if (!backend.opRunning) {
+                                            stop()
+                                            rtRow.removing = false
+                                            if (backend.opResult === 1) {
+                                                rtRow.removed = true
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

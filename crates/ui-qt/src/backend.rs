@@ -561,6 +561,10 @@ pub struct SoftwareBackend {
                 if let Some(code) = line.strip_prefix("__done__") {
                     exit_code = code.trim().parse().unwrap_or(1);
                 } else {
+                    // Parse [N/M] progress from dnf5 transaction output
+                    if let Some(pct) = parse_layers_progress(&line) {
+                        shared.progress.store(pct, Ordering::Relaxed);
+                    }
                     if !line.is_empty() { append_log(&line); }
                 }
             }
@@ -647,6 +651,17 @@ pub struct SoftwareBackend {
                 "flatpak" => {
                     let out = Command::new("flatpak")
                         .args(["uninstall", "--noninteractive", "-y", &id])
+                        .output()
+                        .ok();
+                    if let Some(o) = &out {
+                        append_log(&String::from_utf8_lossy(&o.stdout));
+                    }
+                    out.map(|o| o.status.success()).unwrap_or(false)
+                }
+                "flatpak-runtime" => {
+                    // Use --force-remove so runtimes with dependent apps can still be removed
+                    let out = Command::new("flatpak")
+                        .args(["uninstall", "--noninteractive", "-y", "--force-remove", &id])
                         .output()
                         .ok();
                     if let Some(o) = &out {

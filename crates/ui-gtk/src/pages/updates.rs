@@ -12,6 +12,32 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
+// ── Progress message type for package/flatpak upgrade channels ────────────────
+
+enum ProgressMsg {
+    Progress(f64),
+    Done(bool),
+}
+
+// ── Parse [N/M] from dnf5 transaction output, e.g. "[2/4] Upgrading file…" ──
+
+fn parse_dnf_progress(line: &str) -> Option<f64> {
+    let trimmed = line.trim();
+    if let Some(bracket_start) = trimmed.find('[') {
+        if let Some(bracket_end) = trimmed[bracket_start..].find(']') {
+            let inner = &trimmed[bracket_start + 1..bracket_start + bracket_end];
+            if let Some(slash) = inner.find('/') {
+                let n: f64 = inner[..slash].trim().parse().ok()?;
+                let total: f64 = inner[slash + 1..].trim().parse().ok()?;
+                if total > 0.0 {
+                    return Some((n / total).min(1.0));
+                }
+            }
+        }
+    }
+    None
+}
+
 use rakuos_flatpak::FlatpakUpdate;
 use rakuos_updates::UpdateInfo;
 
@@ -688,45 +714,62 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
     let done_c   = done_lbl.clone();
     let btn_c    = update_all_btn.clone();
     let status_c = status_lbl.clone();
+    let card_c   = card.clone();
 
     update_all_btn.connect_clicked(move |btn| {
         if state_c.is_running() { return; }
         state_c.start("packages");
         btn.set_sensitive(false);
         btn.set_label("Updating…");
+        prog_c.set_fraction(0.0);
         prog_c.set_visible(true);
 
-        let (tx, rx) = mpsc::channel::<bool>();
+        let (tx, rx) = mpsc::channel::<ProgressMsg>();
         std::thread::spawn(move || {
-            let ok = rakuos_updates::upgrade_packages_stream()
-                .any(|l| l.starts_with("__done__0"));
-            let _ = tx.send(ok);
+            for line in rakuos_updates::upgrade_packages_stream() {
+                if let Some(code) = line.strip_prefix("__done__") {
+                    let ok = code.trim() == "0";
+                    let _ = tx.send(ProgressMsg::Done(ok));
+                    return;
+                }
+                if let Some(pct) = parse_dnf_progress(&line) {
+                    let _ = tx.send(ProgressMsg::Progress(pct));
+                }
+            }
+            let _ = tx.send(ProgressMsg::Done(false));
         });
 
-        let state_r = state_c.clone();
-        let prog_r  = prog_c.clone();
-        let done_r  = done_c.clone();
-        let btn_r   = btn_c.clone();
+        let state_r  = state_c.clone();
+        let prog_r   = prog_c.clone();
+        let done_r   = done_c.clone();
+        let btn_r    = btn_c.clone();
         let status_r = status_c.clone();
+        let card_r   = card_c.clone();
 
         glib::timeout_add_local(Duration::from_millis(100), move || {
-            prog_r.pulse();
-            match rx.try_recv() {
-                Ok(ok) => {
-                    state_r.stop();
-                    prog_r.set_visible(false);
-                    if ok {
-                        done_r.set_label("Packages updated");
-                        status_r.set_label("Packages updated");
-                    } else {
-                        done_r.set_label("Update failed");
-                    }
-                    done_r.set_visible(true);
-                    btn_r.set_label("Done");
-                    glib::ControlFlow::Break
+            let mut done_result: Option<bool> = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(ProgressMsg::Progress(pct)) => { prog_r.set_fraction(pct); }
+                    Ok(ProgressMsg::Done(ok))      => { done_result = Some(ok); break; }
+                    Err(_)                         => break,
                 }
-                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(_) => { state_r.stop(); glib::ControlFlow::Break }
+            }
+            if let Some(ok) = done_result {
+                state_r.stop();
+                prog_r.set_visible(false);
+                if ok {
+                    card_r.set_visible(false);
+                    status_r.set_label("Packages updated");
+                } else {
+                    done_r.set_label("Update failed");
+                    done_r.set_visible(true);
+                    btn_r.set_label("Retry");
+                    btn_r.set_sensitive(true);
+                }
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
             }
         });
     });
@@ -794,6 +837,7 @@ fn build_flatpak_section(title: &str, flatpaks: &[FlatpakUpdate], state: UpdateS
     let fps_all  = flatpaks.to_vec();
     let state_sa = state.clone();
     let btn_sa   = sec_upd_btn.clone();
+    let card_sa  = card.clone();
 
     sec_upd_btn.connect_clicked(move |btn| {
         if state_sa.is_running() { return; }
@@ -802,22 +846,31 @@ fn build_flatpak_section(title: &str, flatpaks: &[FlatpakUpdate], state: UpdateS
         btn.set_label("Updating…");
 
         let fps = fps_all.clone();
-        let (tx, rx) = mpsc::channel::<()>();
+        let (tx, rx) = mpsc::channel::<bool>();
         std::thread::spawn(move || {
+            let mut all_ok = true;
             for fp in &fps {
                 let id = fp.app_id.clone();
-                let _: Vec<_> = rakuos_flatpak::update_single_stream(&id).collect();
+                let ok = rakuos_flatpak::update_single_stream(&id)
+                    .any(|l| l.starts_with("__done__0"));
+                if !ok { all_ok = false; }
             }
-            let _ = tx.send(());
+            let _ = tx.send(all_ok);
         });
 
         let state_r = state_sa.clone();
         let btn_r   = btn_sa.clone();
+        let card_r  = card_sa.clone();
         glib::timeout_add_local(Duration::from_millis(100), move || {
             match rx.try_recv() {
-                Ok(_) => {
+                Ok(ok) => {
                     state_r.stop();
-                    btn_r.set_label("Done");
+                    if ok {
+                        card_r.set_visible(false);
+                    } else {
+                        btn_r.set_label("Retry");
+                        btn_r.set_sensitive(true);
+                    }
                     glib::ControlFlow::Break
                 }
                 Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
@@ -915,12 +968,14 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
     let prog_c  = progress.clone();
     let btn_ref = update_btn.clone();
     let state_c = state.clone();
+    let row_c   = row.clone();
 
     update_btn.connect_clicked(move |btn| {
         if state_c.is_running() { return; }
         state_c.start(&app_id);
         btn.set_sensitive(false);
         btn.set_label("Updating…");
+        prog_c.set_fraction(0.0);
         prog_c.set_visible(true);
 
         let id = app_id.clone();
@@ -938,6 +993,7 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
         let state_r = state_c.clone();
         let prog_r  = prog_c.clone();
         let btn_r   = btn_ref.clone();
+        let row_r   = row_c.clone();
 
         glib::timeout_add_local(Duration::from_millis(100), move || {
             prog_r.pulse();
@@ -946,7 +1002,8 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
                     state_r.stop();
                     prog_r.set_visible(false);
                     if ok {
-                        btn_r.set_label("Done");
+                        // Hide the entire row on success
+                        row_r.set_visible(false);
                     } else {
                         btn_r.set_label("Retry");
                         btn_r.set_sensitive(true);
