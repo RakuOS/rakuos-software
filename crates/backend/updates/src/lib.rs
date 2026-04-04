@@ -176,6 +176,34 @@ pub fn rollback_stream() -> impl Iterator<Item = String> {
     run_stream_owned(vec!["sudo".into(), "bootc".into(), "rollback".into()])
 }
 
+/// Check for overlay package updates using `rakuos-update check`.
+/// Returns a Vec of raw JSON values, one per updatable package.
+pub fn check_packages_script() -> Vec<serde_json::Value> {
+    let out = Command::new("/usr/libexec/rakuos/rakuos-update")
+        .arg("check")
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    let data: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_default();
+    data["updates"].as_array().cloned().unwrap_or_default()
+}
+
+/// Check for a system image update using the `rakuos-update check-image` script.
+/// Returns (update_available, raw_json_value).
+/// This matches what the daemon uses and produces the same cache format.
+pub fn check_image_script() -> (bool, serde_json::Value) {
+    let out = Command::new("/usr/libexec/rakuos/rakuos-update")
+        .arg("check-image")
+        .output();
+    let Ok(out) = out else {
+        return (false, serde_json::json!({"error": "failed to run check-image"}));
+    };
+    let data: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or(serde_json::json!({}));
+    let available = data["update"].as_bool().unwrap_or(false);
+    (available, data)
+}
+
 /// Schedule a system reboot. Returns (success, error_message).
 pub fn schedule_reboot() -> (bool, String) {
     match Command::new("systemctl").arg("reboot").output() {

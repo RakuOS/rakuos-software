@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use rakuos_appimages::AppImage;
-use rakuos_packages::NativeApp;
+use rakuos_packages::{FlatpakRuntime, NativeApp};
 use rakuos_webapps::WebApp;
 
 use super::icon_helper::load_app_icon;
@@ -51,20 +51,21 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
     outer.append(&switcher_bar);
 
     // ── Single combined load (mirrors Qt InstalledPage) ───────────────────────
-    type InstalledData = (Vec<NativeApp>, Vec<NativeApp>, Vec<AppImage>, Vec<WebApp>);
+    type InstalledData = (Vec<NativeApp>, Vec<NativeApp>, Vec<FlatpakRuntime>, Vec<AppImage>, Vec<WebApp>);
     let (tx, rx) = mpsc::channel::<InstalledData>();
 
     std::thread::spawn(move || {
-        let native  = rakuos_packages::get_installed().unwrap_or_default();
-        let flatpak = rakuos_packages::get_installed_flatpaks_enriched().unwrap_or_default();
-        let images  = rakuos_appimages::get_installed();
-        let webapps = rakuos_webapps::get_installed();
-        let _ = tx.send((native, flatpak, images, webapps));
+        let native   = rakuos_packages::get_installed().unwrap_or_default();
+        let flatpak  = rakuos_packages::get_installed_flatpaks_enriched().unwrap_or_default();
+        let runtimes = rakuos_packages::get_installed_flatpak_runtimes();
+        let images   = rakuos_appimages::get_installed();
+        let webapps  = rakuos_webapps::get_installed();
+        let _ = tx.send((native, flatpak, runtimes, images, webapps));
     });
 
     glib::timeout_add_local(Duration::from_millis(80), move || {
         match rx.try_recv() {
-            Ok((native, flatpak, appimages, webapps)) => {
+            Ok((native, flatpak, runtimes, appimages, webapps)) => {
                 // Stop spinners
                 for sp in [&rpm_spinner, &fp_spinner, &ai_spinner, &wa_spinner] {
                     sp.set_spinning(false);
@@ -73,7 +74,7 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
 
                 // Update tab titles with counts
                 rpm_page.set_title(Some(&format!("RPM ({})", native.len())));
-                fp_page.set_title(Some(&format!("Flatpak ({})", flatpak.len())));
+                fp_page.set_title(Some(&format!("Flatpak ({}) + {} runtimes", flatpak.len(), runtimes.len())));
                 ai_page.set_title(Some(&format!("AppImages ({})", appimages.len())));
                 wa_page.set_title(Some(&format!("Web Apps ({})", webapps.len())));
 
@@ -89,15 +90,26 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
                     }
                 }
 
-                // Populate Flatpak
-                if flatpak.is_empty() {
+                // Populate Flatpak apps
+                if flatpak.is_empty() && runtimes.is_empty() {
                     fp_list.append(&build_empty_state("No Flatpaks Installed",
                         "Install Flatpak apps from the Explore page", "package-x-generic-symbolic"));
                 } else {
-                    let mut sorted = flatpak.clone();
-                    sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                    for app in &sorted {
-                        fp_list.append(&build_native_app_row(app, Arc::clone(&nav)));
+                    if !flatpak.is_empty() {
+                        fp_list.append(&build_section_header("Applications"));
+                        let mut sorted = flatpak.clone();
+                        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        for app in &sorted {
+                            fp_list.append(&build_native_app_row(app, Arc::clone(&nav)));
+                        }
+                    }
+                    if !runtimes.is_empty() {
+                        fp_list.append(&build_section_header("Runtimes / Add-ons"));
+                        let mut sorted = runtimes.clone();
+                        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        for rt in &sorted {
+                            fp_list.append(&build_runtime_row(rt));
+                        }
                     }
                 }
 
@@ -162,6 +174,64 @@ fn make_tab_shell() -> (Widget, gtk4::Spinner, gtk4::ListBox) {
 
     (wrapper.upcast(), spinner, list)
 }
+
+fn build_section_header(title: &str) -> Widget {
+    let lbl = Label::builder()
+        .label(title)
+        .halign(Align::Start)
+        .margin_top(12)
+        .margin_bottom(4)
+        .margin_start(16)
+        .css_classes(vec!["heading".to_string(), "dim-label".to_string()])
+        .build();
+    lbl.upcast()
+}
+
+fn build_runtime_row(rt: &FlatpakRuntime) -> Widget {
+    let row = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+
+    let icon = gtk4::Image::builder()
+        .icon_name("application-x-addon-symbolic")
+        .pixel_size(32)
+        .build();
+    row.append(&icon);
+
+    let info = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(2)
+        .valign(Align::Center)
+        .hexpand(true)
+        .build();
+    info.append(&Label::builder()
+        .label(&rt.name)
+        .halign(Align::Start)
+        .build());
+    let sub = if rt.version.is_empty() {
+        format!("{} · {}", rt.app_id, rt.origin)
+    } else {
+        format!("{} · {} · {}", rt.app_id, rt.version, rt.origin)
+    };
+    info.append(&Label::builder()
+        .label(&sub)
+        .halign(Align::Start)
+        .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+        .wrap(true)
+        .build());
+    row.append(&info);
+
+    let list_row = gtk4::ListBoxRow::new();
+    list_row.set_child(Some(&row));
+    list_row.set_activatable(false);
+    list_row.upcast()
+}
+
 
 
 fn build_native_app_row(app: &NativeApp, nav: Arc<NavigationView>) -> Widget {

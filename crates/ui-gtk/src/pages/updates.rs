@@ -122,6 +122,60 @@ pub fn build(_nav: Arc<NavigationView>) -> Widget {
         reboot_btn.clone(),
     );
 
+    // ── Daemon cache watcher: refresh when daemon writes new update data ───
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let cache_path = std::path::PathBuf::from(home)
+            .join(".cache/rakuos/daemon-update-cache.json");
+        // Seed with current mtime so we only refresh on changes after startup
+        let last_mtime = Rc::new(RefCell::new(
+            std::fs::metadata(&cache_path)
+                .and_then(|m| m.modified())
+                .ok(),
+        ));
+        let content_d  = content.clone();
+        let status_d   = status_lbl.clone();
+        let busy_d     = busy.clone();
+        let upd_all_d  = update_all_btn.clone();
+        let reboot_d   = reboot_btn.clone();
+
+        glib::timeout_add_seconds_local(30, move || {
+            let current = std::fs::metadata(&cache_path)
+                .and_then(|m| m.modified())
+                .ok();
+            if current != *last_mtime.borrow() {
+                *last_mtime.borrow_mut() = current;
+                // Only refresh if no update is already running (buttons not busy)
+                if !busy_d.is_spinning() {
+                    while let Some(child) = content_d.first_child() {
+                        content_d.remove(&child);
+                    }
+                    upd_all_d.set_visible(false);
+                    upd_all_d.set_sensitive(false);
+                    reboot_d.set_visible(false);
+                    status_d.set_label("Checking for updates…");
+                    busy_d.set_spinning(true);
+                    busy_d.set_visible(true);
+                    let sp = Spinner::builder()
+                        .spinning(true)
+                        .halign(Align::Center)
+                        .margin_top(48)
+                        .build();
+                    content_d.append(&sp);
+                    load_updates(
+                        content_d.clone(),
+                        sp,
+                        status_d.clone(),
+                        busy_d.clone(),
+                        upd_all_d.clone(),
+                        reboot_d.clone(),
+                    );
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     // ── Check / Refresh button ─────────────────────────────────────────────
     {
         let content_c = content.clone();
@@ -182,22 +236,32 @@ fn load_updates(
     update_all_btn: Button,
     reboot_btn:     Button,
 ) {
-    let (tx, rx) = mpsc::channel::<(UpdateInfo, Vec<FlatpakUpdate>)>();
+    type CheckResult = (UpdateInfo, Vec<serde_json::Value>, Vec<FlatpakUpdate>);
+    let (tx, rx) = mpsc::channel::<CheckResult>();
 
     std::thread::spawn(move || {
-        let rt       = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let system   = rt.block_on(rakuos_updates::check_for_update());
+        // Run all three checks: packages, flatpak, image
+        let packages = rakuos_updates::check_packages_script();
         let flatpaks = rakuos_flatpak::get_all_updates();
+        let (image_available, image_json) = rakuos_updates::check_image_script();
+        let system = UpdateInfo {
+            available:       image_available,
+            current_version: image_json["booted"].as_str().unwrap_or("").to_string(),
+            new_version:     image_json["available"].as_str().unwrap_or("").to_string(),
+            new_tag:         image_json["available"].as_str().unwrap_or("").to_string(),
+            repo_url:        image_json["repo"].as_str().unwrap_or("").to_string(),
+            ..Default::default()
+        };
 
-        // Keep daemon cache in sync
-        let total = (if system.available { 1 } else { 0 }) + flatpaks.len();
+        // Write daemon cache in the same format the daemon uses
+        let total = (if system.available { 1 } else { 0 }) + packages.len() + flatpaks.len();
         let cache = serde_json::json!({
             "total":           total,
-            "packages":        [],
+            "packages":        packages,
             "flatpak":         serde_json::to_value(&flatpaks).unwrap_or_default(),
             "appimages":       [],
             "image_available": system.available,
-            "image_info":      serde_json::to_value(&system).unwrap_or_default(),
+            "image_info":      image_json,
         });
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let cache_path = std::path::PathBuf::from(home)
@@ -207,12 +271,12 @@ fn load_updates(
         }
         let _ = std::fs::write(&cache_path, serde_json::to_string_pretty(&cache).unwrap_or_default());
 
-        let _ = tx.send((system, flatpaks));
+        let _ = tx.send((system, packages, flatpaks));
     });
 
     glib::timeout_add_local(Duration::from_millis(80), move || {
         match rx.try_recv() {
-            Ok((system, flatpaks)) => {
+            Ok((system, packages, flatpaks)) => {
                 spinner.set_spinning(false);
                 spinner.set_visible(false);
                 busy.set_spinning(false);
@@ -221,11 +285,12 @@ fn load_updates(
                 let apps:     Vec<FlatpakUpdate> = flatpaks.iter().filter(|f| !f.runtime).cloned().collect();
                 let runtimes: Vec<FlatpakUpdate> = flatpaks.iter().filter(|f|  f.runtime).cloned().collect();
 
-                let has_image   = system.available;
-                let has_apps    = !apps.is_empty();
+                let has_image    = system.available;
+                let has_pkgs     = !packages.is_empty();
+                let has_apps     = !apps.is_empty();
                 let has_runtimes = !runtimes.is_empty();
 
-                if !has_image && !has_apps && !has_runtimes {
+                if !has_image && !has_pkgs && !has_apps && !has_runtimes {
                     status_lbl.set_label("Your system is up to date");
                     let sp = libadwaita::StatusPage::builder()
                         .title("Up to Date")
@@ -234,7 +299,7 @@ fn load_updates(
                         .build();
                     content.append(&sp);
                 } else {
-                    let count = (if has_image { 1 } else { 0 }) + flatpaks.len();
+                    let count = (if has_image { 1 } else { 0 }) + packages.len() + flatpaks.len();
                     status_lbl.set_label(&format!(
                         "{} update{} available",
                         count,
@@ -257,6 +322,11 @@ fn load_updates(
                         ));
                     }
 
+                    // Package updates section
+                    if has_pkgs {
+                        content.append(&build_packages_section(&packages, state.clone(), status_lbl.clone()));
+                    }
+
                     // Applications section (non-runtime flatpaks)
                     if has_apps {
                         content.append(&build_flatpak_section("Applications", &apps, state.clone()));
@@ -268,14 +338,15 @@ fn load_updates(
                     }
 
                     // Wire Update All
-                    let sys_repo = system.repo_url.clone();
-                    let sys_tag  = system.new_tag.clone();
-                    let do_image = system.available;
-                    let all_fps  = flatpaks.clone();
-                    let state_a  = state.clone();
-                    let status_a = status_lbl.clone();
-                    let upd_btn  = update_all_btn.clone();
-                    let reboot_a = reboot_btn.clone();
+                    let sys_repo  = system.repo_url.clone();
+                    let sys_tag   = system.new_tag.clone();
+                    let do_image  = system.available;
+                    let do_pkgs   = has_pkgs;
+                    let all_fps   = flatpaks.clone();
+                    let state_a   = state.clone();
+                    let status_a  = status_lbl.clone();
+                    let upd_btn   = update_all_btn.clone();
+                    let reboot_a  = reboot_btn.clone();
 
                     update_all_btn.connect_clicked(move |btn| {
                         if state_a.is_running() { return; }
@@ -288,11 +359,15 @@ fn load_updates(
                         let tag    = sys_tag.clone();
                         let fps    = all_fps.clone();
                         let do_img = do_image;
+                        let do_pkg = do_pkgs;
                         let (tx2, rx2) = mpsc::channel::<bool>();
 
                         std::thread::spawn(move || {
                             if do_img {
                                 let _: Vec<_> = rakuos_updates::upgrade_image_stream("switch", &repo, &tag).collect();
+                            }
+                            if do_pkg {
+                                let _: Vec<_> = rakuos_updates::upgrade_packages_stream().collect();
                             }
                             for fp in &fps {
                                 let id = fp.app_id.clone();
@@ -515,6 +590,143 @@ fn build_image_card(
                     btn_r.set_sensitive(true);
                     glib::ControlFlow::Break
                 }
+            }
+        });
+    });
+
+    card.upcast()
+}
+
+// ── Package updates section card ─────────────────────────────────────────────
+
+fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, status_lbl: Label) -> Widget {
+    let card = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(0)
+        .css_classes(vec!["card".to_string()])
+        .build();
+
+    // Header
+    let header = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(12).margin_bottom(8)
+        .margin_start(12).margin_end(12)
+        .build();
+    header.append(&Label::builder()
+        .label("Packages")
+        .halign(Align::Start).hexpand(true)
+        .css_classes(vec!["heading".to_string()])
+        .build());
+    let n = packages.len();
+    header.append(&Label::builder()
+        .label(&format!("{} update{}", n, if n == 1 { "" } else { "s" }))
+        .halign(Align::End)
+        .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
+        .build());
+
+    let update_all_btn = Button::builder()
+        .label("Update All")
+        .valign(Align::Center)
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+    header.append(&update_all_btn);
+    card.append(&header);
+    card.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+    let progress = ProgressBar::builder()
+        .margin_start(12).margin_end(12)
+        .margin_bottom(4)
+        .visible(false)
+        .build();
+    let done_lbl = Label::builder()
+        .halign(Align::Center).margin_bottom(8)
+        .visible(false)
+        .css_classes(vec!["caption".to_string()])
+        .build();
+
+    // Rows
+    for pkg in packages {
+        let name = pkg["name"].as_str().unwrap_or("").to_string();
+        let cur  = pkg["current_version"].as_str().unwrap_or("").to_string();
+        let new  = pkg["version"].as_str().unwrap_or("").to_string();
+
+        let row = GBox::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(12)
+            .margin_top(8).margin_bottom(8)
+            .margin_start(12).margin_end(12)
+            .build();
+        row.append(&gtk4::Image::builder()
+            .icon_name("package-x-generic-symbolic")
+            .pixel_size(28).build());
+
+        let info = GBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(2).valign(Align::Center).hexpand(true)
+            .build();
+        info.append(&Label::builder().label(&name).halign(Align::Start)
+            .css_classes(vec!["heading".to_string()]).build());
+        if !cur.is_empty() && !new.is_empty() {
+            info.append(&Label::builder()
+                .label(&format!("{} → {}", cur, new))
+                .halign(Align::Start)
+                .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+                .build());
+        }
+        row.append(&info);
+        card.append(&row);
+        card.append(&gtk4::Separator::new(Orientation::Horizontal));
+    }
+
+    card.append(&progress);
+    card.append(&done_lbl);
+
+    // Wire Update All
+    let state_c  = state.clone();
+    let prog_c   = progress.clone();
+    let done_c   = done_lbl.clone();
+    let btn_c    = update_all_btn.clone();
+    let status_c = status_lbl.clone();
+
+    update_all_btn.connect_clicked(move |btn| {
+        if state_c.is_running() { return; }
+        state_c.start("packages");
+        btn.set_sensitive(false);
+        btn.set_label("Updating…");
+        prog_c.set_visible(true);
+
+        let (tx, rx) = mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let ok = rakuos_updates::upgrade_packages_stream()
+                .any(|l| l.starts_with("__done__0"));
+            let _ = tx.send(ok);
+        });
+
+        let state_r = state_c.clone();
+        let prog_r  = prog_c.clone();
+        let done_r  = done_c.clone();
+        let btn_r   = btn_c.clone();
+        let status_r = status_c.clone();
+
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            prog_r.pulse();
+            match rx.try_recv() {
+                Ok(ok) => {
+                    state_r.stop();
+                    prog_r.set_visible(false);
+                    if ok {
+                        done_r.set_label("Packages updated");
+                        status_r.set_label("Packages updated");
+                    } else {
+                        done_r.set_label("Update failed");
+                    }
+                    done_r.set_visible(true);
+                    btn_r.set_label("Done");
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => { state_r.stop(); glib::ControlFlow::Break }
             }
         });
     });

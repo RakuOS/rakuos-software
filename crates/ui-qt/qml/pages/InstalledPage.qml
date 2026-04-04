@@ -12,6 +12,7 @@ Item {
     // Filtered lists by source
     property var rpmApps: []
     property var flatpakApps: []
+    property var flatpakRuntimes: []
     property var appImages: []
     property var webApps: []
 
@@ -22,7 +23,9 @@ Item {
     function loadInstalled() {
         loading = true;
         allApps = [];
-        rpmApps = []; flatpakApps = []; appImages = []; webApps = [];
+        rpmApps = []; flatpakApps = []; flatpakRuntimes = []; appImages = []; webApps = [];
+        // Load runtimes synchronously (fast flatpak list call)
+        try { flatpakRuntimes = JSON.parse(backend.loadFlatpakRuntimes()); } catch(e) { flatpakRuntimes = []; }
         backend.loadInstalled();
         pollTimer.start();
     }
@@ -80,7 +83,9 @@ Item {
                 text: "RPM (" + installedPage.rpmApps.length + ")"
             }
             TabButton {
-                text: "Flatpak (" + installedPage.flatpakApps.length + ")"
+                text: "Flatpak (" + installedPage.flatpakApps.length + ")" +
+                      (installedPage.flatpakRuntimes.length > 0
+                       ? " + " + installedPage.flatpakRuntimes.length + " runtimes" : "")
             }
             TabButton {
                 text: "AppImages (" + installedPage.appImages.length + ")"
@@ -122,13 +127,112 @@ Item {
                 onAppClicked: function(app) { root.showDetail(app) }
             }
 
-            // Flatpak tab
-            AppListView {
-                apps: installedPage.flatpakApps
-                emptyText: "No Flatpaks installed."
-                onRemoveApp: function(appId) { backend.removeApp(appId, "flatpak") }
-                onReloadRequested: installedPage.loadInstalled()
-                onAppClicked: function(app) { root.showDetail(app) }
+            // Flatpak tab — apps + runtimes sections
+            Item {
+                ScrollView {
+                    anchors.fill: parent
+                    contentWidth: availableWidth
+                    clip: true
+                    visible: installedPage.flatpakApps.length > 0 || installedPage.flatpakRuntimes.length > 0
+
+                    Column {
+                        width: parent.width
+                        topPadding: 4
+                        bottomPadding: 8
+
+                        // Applications section
+                        Label {
+                            visible: installedPage.flatpakApps.length > 0
+                            text: "Applications"
+                            font.bold: true
+                            font.pixelSize: 11
+                            color: root.dimText
+                            leftPadding: 16
+                            topPadding: 8
+                            bottomPadding: 4
+                        }
+
+                        Repeater {
+                            model: installedPage.flatpakApps
+                            delegate: Rectangle {
+                                id: fpAppRow
+                                width: parent.width
+                                height: 52
+                                color: fpRowClick.containsMouse && !fpAppRow.removing
+                                    ? Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.06)
+                                    : "transparent"
+                                property bool removing: false
+                                property bool removed: false
+                                visible: !removed
+                                MouseArea {
+                                    id: fpRowClick; anchors.fill: parent; z: -1
+                                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.showDetail(modelData)
+                                }
+                                RowLayout {
+                                    anchors { fill: parent; leftMargin: 16; rightMargin: 24 }
+                                    spacing: 12
+                                    AppIcon { iconPath: modelData.icon_path || ""; iconUrl: modelData.icon_url || ""; iconName: modelData.name || modelData.id || "?"; size: 32 }
+                                    Column {
+                                        Layout.fillWidth: true; spacing: 2
+                                        Label { text: modelData.name || modelData.id || ""; font.bold: true; elide: Text.ElideRight; width: parent.width }
+                                        Label { text: (modelData.summary || "").substring(0,80); font.pixelSize: 11; color: root.dimText; visible: text !== ""; elide: Text.ElideRight; width: parent.width }
+                                    }
+                                    Label { text: modelData.version || ""; font.pixelSize: 11; color: root.dimText; visible: text !== "" }
+                                    Button {
+                                        visible: !fpAppRow.removing; flat: true; implicitWidth: 80; implicitHeight: 32
+                                        contentItem: Label { text: "Uninstall"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                        onClicked: { fpAppRow.removing = true; backend.removeApp(modelData.id || "", "flatpak"); fpRemoveTimer.start() }
+                                    }
+                                    BusyIndicator { running: fpAppRow.removing; visible: fpAppRow.removing; implicitWidth: 20; implicitHeight: 20 }
+                                }
+                                Rectangle { anchors { bottom: parent.bottom; left: parent.left; right: parent.right; leftMargin: 16; rightMargin: 16 }; height: 1; color: palette.mid; opacity: 0.15 }
+                                Timer {
+                                    id: fpRemoveTimer; interval: 400; repeat: true
+                                    onTriggered: { backend.pollOp(); if (!backend.opRunning) { stop(); fpAppRow.removing = false; if (backend.opResult === 1) { fpAppRow.removed = true; } } }
+                                }
+                            }
+                        }
+
+                        // Runtimes / Add-ons section
+                        Label {
+                            visible: installedPage.flatpakRuntimes.length > 0
+                            text: "Runtimes / Add-ons"
+                            font.bold: true
+                            font.pixelSize: 11
+                            color: root.dimText
+                            leftPadding: 16
+                            topPadding: 12
+                            bottomPadding: 4
+                        }
+
+                        Repeater {
+                            model: installedPage.flatpakRuntimes
+                            delegate: Rectangle {
+                                width: parent.width; height: 52
+                                color: "transparent"
+                                RowLayout {
+                                    anchors { fill: parent; leftMargin: 16; rightMargin: 24 }
+                                    spacing: 12
+                                    Image { source: "image://theme/application-x-addon"; width: 32; height: 32; fillMode: Image.PreserveAspectFit }
+                                    Column {
+                                        Layout.fillWidth: true; spacing: 2
+                                        Label { text: modelData.name || modelData.app_id || ""; font.bold: true; elide: Text.ElideRight; width: parent.width }
+                                        Label { text: (modelData.app_id || "") + (modelData.version ? " · " + modelData.version : "") + (modelData.origin ? " · " + modelData.origin : ""); font.pixelSize: 11; color: root.dimText; elide: Text.ElideRight; width: parent.width }
+                                    }
+                                }
+                                Rectangle { anchors { bottom: parent.bottom; left: parent.left; right: parent.right; leftMargin: 16; rightMargin: 16 }; height: 1; color: palette.mid; opacity: 0.15 }
+                            }
+                        }
+                    }
+                }
+
+                Label {
+                    anchors.centerIn: parent
+                    text: "No Flatpaks installed."
+                    color: root.dimText
+                    visible: installedPage.flatpakApps.length === 0 && installedPage.flatpakRuntimes.length === 0
+                }
             }
 
             // AppImages tab

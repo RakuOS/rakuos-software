@@ -238,6 +238,13 @@ pub struct SoftwareBackend {
         }
     }),
 
+    // ── Installed Flatpak runtimes/add-ons (sync) ────────────────────────────
+
+    loadFlatpakRuntimes: qt_method!(fn loadFlatpakRuntimes(&mut self) -> QString {
+        let runtimes = rakuos_packages::get_installed_flatpak_runtimes();
+        QString::from(serde_json::to_string(&runtimes).unwrap_or_else(|_| "[]".to_string()))
+    }),
+
     // ── Web App catalog ───────────────────────────────────────────────────────
 
     loadWebAppCatalog: qt_method!(fn loadWebAppCatalog(&mut self) {
@@ -459,10 +466,8 @@ pub struct SoftwareBackend {
                 .and_then(|v| v["updates"].as_array().cloned())
                 .unwrap_or_default();
 
-            // Check image update via Rust async
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let image_info = rt.block_on(rakuos_updates::check_for_update());
-            let image_available = image_info.available;
+            // Check image update via rakuos-update check-image (same as daemon)
+            let (image_available, image_info) = rakuos_updates::check_image_script();
 
             let total = pkg_updates.len() + fp_updates.len()
                 + if image_available { 1 } else { 0 };
@@ -472,7 +477,7 @@ pub struct SoftwareBackend {
                 "flatpak":         fp_updates,
                 "appimages":       [],
                 "image_available": image_available,
-                "image_info":      serde_json::to_value(&image_info).unwrap_or_default(),
+                "image_info":      image_info,
                 "total": total,
             });
 

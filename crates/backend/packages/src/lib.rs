@@ -235,6 +235,42 @@ pub fn get_installed() -> Result<Vec<NativeApp>> {
     Ok(results)
 }
 
+/// A lightweight view of an installed Flatpak runtime or add-on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlatpakRuntime {
+    pub app_id:  String,
+    pub name:    String,
+    pub version: String,
+    pub origin:  String,
+}
+
+/// Return all installed Flatpak runtimes and add-ons (not apps).
+pub fn get_installed_flatpak_runtimes() -> Vec<FlatpakRuntime> {
+    let Ok(out) = Command::new("flatpak")
+        .args(["list", "--runtime", "--columns=application,name,version,origin"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\t');
+            let app_id  = parts.next().unwrap_or("").trim();
+            let name    = parts.next().unwrap_or("").trim();
+            let version = parts.next().unwrap_or("").trim();
+            let origin  = parts.next().unwrap_or("flathub").trim();
+            if app_id.is_empty() { return None; }
+            Some(FlatpakRuntime {
+                app_id:  app_id.to_string(),
+                name:    if name.is_empty() { app_id.to_string() } else { name.to_string() },
+                version: version.to_string(),
+                origin:  origin.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Return installed Flatpak apps enriched with AppStream metadata.
 pub fn get_installed_flatpaks_enriched() -> Result<Vec<NativeApp>> {
     let appstream = get_appstream();
