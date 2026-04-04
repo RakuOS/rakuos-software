@@ -149,6 +149,49 @@ pub fn build(_nav: Arc<NavigationView>) -> Widget {
         reboot_btn.clone(),
     );
 
+    // ── Daemon trigger watcher: daemon signals us to run an enriched check ────
+    {
+        let content_t  = content.clone();
+        let status_t   = status_lbl.clone();
+        let busy_t     = busy.clone();
+        let upd_all_t  = update_all_btn.clone();
+        let reboot_t   = reboot_btn.clone();
+        let trigger_path = std::path::PathBuf::from(
+            std::env::temp_dir().join("rakuos-software-check-requested"));
+
+        glib::timeout_add_seconds_local(10, move || {
+            if trigger_path.exists() {
+                let _ = std::fs::remove_file(&trigger_path);
+                if !busy_t.is_spinning() {
+                    while let Some(child) = content_t.first_child() {
+                        content_t.remove(&child);
+                    }
+                    upd_all_t.set_visible(false);
+                    upd_all_t.set_sensitive(false);
+                    reboot_t.set_visible(false);
+                    status_t.set_label("Checking for updates…");
+                    busy_t.set_spinning(true);
+                    busy_t.set_visible(true);
+                    let sp = Spinner::builder()
+                        .spinning(true)
+                        .halign(Align::Center)
+                        .margin_top(48)
+                        .build();
+                    content_t.append(&sp);
+                    load_updates(
+                        content_t.clone(),
+                        sp,
+                        status_t.clone(),
+                        busy_t.clone(),
+                        upd_all_t.clone(),
+                        reboot_t.clone(),
+                    );
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     // ── Daemon cache watcher: refresh when daemon writes new update data ───
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

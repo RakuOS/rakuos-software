@@ -452,22 +452,67 @@ Item {
     // ── Rollback confirm dialog ───────────────────────────────────────────────
     Dialog {
         id: rollbackConfirmDlg
-        title: "Rollback System?"
+        title: "Roll Back System?"
         modal: true
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        standardButtons: Dialog.NoButton
+        width: 460
 
-        Label {
-            text: "This will roll back to the previous OS image.\nYou will need to reboot after rollback."
-            wrapMode: Text.WordWrap
-            width: 320
-        }
+        Column {
+            spacing: 12
+            width: rollbackConfirmDlg.width - 48
 
-        onAccepted: {
-            backend.rollbackSystem();
-            upgrading = true;
-            upgradeLog = "";
-            opStatusMsg = "";
-            upgradePollTimer.start();
+            Label {
+                width: parent.width
+                text: "This will roll back to the previous OS image and perform a soft overlay reset.\n\nYour installed packages list is preserved — the overlay will be rebuilt from it on next boot.\n\npkexec will prompt for your password twice."
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: root.dimText
+            }
+
+            Rectangle {
+                width: parent.width
+                height: rollbackCardCol.implicitHeight + 20
+                radius: 6
+                color: palette.button
+                border.color: "#b71c1c"
+                border.width: 1
+
+                Column {
+                    id: rollbackCardCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                    spacing: 8
+
+                    Label { text: "Roll Back + Soft Reset"; font.pixelSize: 13; font.bold: true; color: "#e53935" }
+                    Label {
+                        width: parent.width
+                        text: "Reverts the OS image and schedules an overlay rebuild. All current overlay changes will be wiped and reinstalled from your packages list on next boot."
+                        wrapMode: Text.WordWrap
+                        color: root.dimText
+                        font.pixelSize: 11
+                    }
+                    Button {
+                        width: parent.width
+                        implicitHeight: 32
+                        background: Rectangle { color: "#b71c1c"; radius: 4 }
+                        contentItem: Label { text: "Roll Back & Reset Overlay"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: {
+                            rollbackConfirmDlg.close();
+                            backend.rollbackSystem();
+                            upgrading = true;
+                            upgradeLog = "";
+                            opStatusMsg = "";
+                            upgradePollTimer.start();
+                        }
+                    }
+                }
+            }
+
+            Button {
+                width: parent.width
+                implicitHeight: 32
+                text: "Cancel"
+                onClicked: rollbackConfirmDlg.close()
+            }
         }
     }
 

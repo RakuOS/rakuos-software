@@ -993,6 +993,18 @@ pub struct SoftwareBackend {
             .into()
     }),
 
+    // Returns true if the daemon wrote a check-trigger flag (and consumes it).
+    // The UI calls this on a timer and runs checkUpdates() when true.
+    checkDaemonTrigger: qt_method!(fn checkDaemonTrigger(&mut self) -> bool {
+        let path = std::env::temp_dir().join("rakuos-software-check-requested");
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+            true
+        } else {
+            false
+        }
+    }),
+
     // ── ODRS Reviews ──────────────────────────────────────────────────────────
 
     /// Start fetching ODRS reviews for app_id in a background thread.

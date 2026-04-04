@@ -25,11 +25,24 @@ Item {
     // Keys: specific app_id, "__packages__" for all rpm rows, "__flatpak__" for all flatpak rows.
     property var completedUpdates: ({})
 
-    // On activate: read daemon cache — don't trigger our own check.
-    // If the cache doesn't exist yet the daemon is still doing its first
-    // check, so show "Checking…" and poll until it appears.
+    // On activate: if we already have data show it instantly; otherwise kick
+    // off our own enriched check (same path as the manual "Check" button so
+    // icons are always populated via AppStream).
     function activate() {
-        _loadFromCache();
+        if (updateData !== null) return;
+        // Try cache first for an instant display; if absent run a full check.
+        var cached = backend.loadUpdatesCache();
+        if (cached && cached.length > 0) {
+            try {
+                updateData = JSON.parse(cached);
+                rebootRequired = updateData.reboot_required === true;
+                backend.pendingUpdateCount = totalUpdates;
+                daemonPollTimer.stop();
+                checking = false;
+            } catch(e) { updateData = {}; }
+        } else {
+            checkUpdates();
+        }
     }
 
     function _loadFromCache() {
@@ -138,6 +151,21 @@ Item {
         interval: 3000
         repeat: true
         onTriggered: _loadFromCache()
+    }
+
+    // Watch for the daemon's check-trigger flag. When the daemon fires its
+    // scheduled check it writes this flag and the UI runs its own enriched
+    // check (so icons are always populated via AppStream).
+    Timer {
+        id: daemonTriggerTimer
+        interval: 10000
+        repeat: true
+        running: true
+        onTriggered: {
+            if (!checking && !updating && backend.checkDaemonTrigger()) {
+                checkUpdates();
+            }
+        }
     }
 
     // Total update count

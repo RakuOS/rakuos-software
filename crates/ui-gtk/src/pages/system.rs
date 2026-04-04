@@ -254,35 +254,96 @@ pub fn build() -> Widget {
     {
         let reboot_b  = img_reboot_btn.clone();
         let status_l  = img_status_lbl.clone();
+        let outer_w   = outer.clone();
 
         rollback_btn.connect_clicked(move |btn| {
-            btn.set_sensitive(false);
-            btn.set_label("Rolling back…");
-            status_l.set_visible(false);
+            // Show warning dialog before proceeding — rollback also triggers a
+            // soft overlay reset so the user knows both operations will run.
+            let dlg = Dialog::builder()
+                .title("Roll Back System?")
+                .build();
 
-            let (tx, rx) = mpsc::channel::<()>();
-            std::thread::spawn(move || {
-                let _: Vec<_> = rakuos_updates::rollback_stream().collect();
-                let _ = tx.send(());
-            });
+            let toolbar = ToolbarView::new();
+            let header = HeaderBar::new();
+            toolbar.add_top_bar(&header);
+
+            let body = GBox::builder()
+                .orientation(Orientation::Vertical)
+                .spacing(12)
+                .margin_top(12)
+                .margin_bottom(20)
+                .margin_start(24)
+                .margin_end(24)
+                .build();
+
+            let msg = Label::builder()
+                .label("This will roll back to the previous OS image and perform a soft overlay reset.\n\nYour installed packages list is preserved — the overlay will be rebuilt from it on next boot.\n\npkexec will prompt for your password twice.")
+                .wrap(true)
+                .xalign(0.0)
+                .build();
+
+            let btn_row = GBox::builder()
+                .orientation(Orientation::Horizontal)
+                .spacing(8)
+                .halign(Align::End)
+                .margin_top(8)
+                .build();
+
+            let cancel_btn = Button::builder()
+                .label("Cancel")
+                .build();
+            let confirm_btn = Button::builder()
+                .label("Roll Back & Reset Overlay")
+                .css_classes(vec!["destructive-action".to_string()])
+                .build();
+
+            btn_row.append(&cancel_btn);
+            btn_row.append(&confirm_btn);
+            body.append(&msg);
+            body.append(&btn_row);
+            toolbar.set_content(Some(&body));
+            dlg.set_child(Some(&toolbar));
+
+            let dlg_c = dlg.clone();
+            cancel_btn.connect_clicked(move |_| { let _ = dlg_c.close(); });
+
+            let dlg_c2   = dlg.clone();
             let btn_c    = btn.clone();
             let reboot_c = reboot_b.clone();
             let status_c = status_l.clone();
 
-            glib::timeout_add_local(Duration::from_millis(50), move || {
-                match rx.try_recv() {
-                    Ok(_) => {
-                        btn_c.set_label("Rollback");
-                        btn_c.set_sensitive(true);
-                        reboot_c.set_visible(true);
-                        status_c.set_label("Rollback staged — reboot to apply.");
-                        status_c.set_visible(true);
-                        glib::ControlFlow::Break
+            confirm_btn.connect_clicked(move |_| {
+                let _ = dlg_c2.close();
+                btn_c.set_sensitive(false);
+                btn_c.set_label("Rolling back…");
+                status_c.set_visible(false);
+
+                let (tx, rx) = mpsc::channel::<()>();
+                std::thread::spawn(move || {
+                    let _: Vec<_> = rakuos_updates::rollback_stream().collect();
+                    let _ = tx.send(());
+                });
+                let btn_c2    = btn_c.clone();
+                let reboot_c2 = reboot_c.clone();
+                let status_c2 = status_c.clone();
+
+                glib::timeout_add_local(Duration::from_millis(50), move || {
+                    match rx.try_recv() {
+                        Ok(_) => {
+                            btn_c2.set_label("Rollback");
+                            btn_c2.set_sensitive(true);
+                            reboot_c2.set_visible(true);
+                            status_c2.set_label("Rollback staged — reboot to apply.");
+                            status_c2.set_visible(true);
+                            glib::ControlFlow::Break
+                        }
+                        Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                        Err(_) => glib::ControlFlow::Break,
                     }
-                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                    Err(_) => glib::ControlFlow::Break,
-                }
+                });
             });
+
+            dlg.present(Some(&outer_w));
         });
     }
 

@@ -30,6 +30,19 @@ fn quit_flag_path() -> std::path::PathBuf {
     std::env::temp_dir().join("rakuos-software-quit")
 }
 
+fn check_trigger_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rakuos-software-check-requested")
+}
+
+/// Returns true if the UI process is currently running (pid file + /proc check).
+fn ui_is_running() -> bool {
+    std::fs::read_to_string(pid_file())
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .map(|pid| std::path::Path::new(&format!("/proc/{}", pid)).exists())
+        .unwrap_or(false)
+}
+
 fn daemon_cache_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".cache/rakuos/daemon-update-cache.json")
@@ -65,16 +78,10 @@ fn ui_binary() -> std::path::PathBuf {
     std::path::PathBuf::from("rakuos-software-gtk")
 }
 
-/// If the UI is already running (PID file + /proc), write the show-flag so
-/// the UI's polling timer picks it up. Otherwise spawn a fresh instance.
+/// If the UI is already running, write the show-flag so its polling timer
+/// picks it up. Otherwise spawn a fresh instance.
 fn signal_or_spawn_ui() {
-    let alive = std::fs::read_to_string(pid_file())
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .map(|pid| std::path::Path::new(&format!("/proc/{}", pid)).exists())
-        .unwrap_or(false);
-
-    if alive {
+    if ui_is_running() {
         let _ = std::fs::write(show_flag_path(), "1");
     } else {
         let _ = std::process::Command::new(ui_binary()).spawn();
@@ -131,40 +138,68 @@ async fn main() -> anyhow::Result<()> {
                 signal_or_spawn_ui();
             }
             DaemonMsg::CheckNow => {
-                log::info!("Running update check...");
-                let settings = Settings::load();
-                let result = run_checks(&settings).await;
-                let count = result.total;
+                if ui_is_running() {
+                    // Signal the UI to run its own icon-enriched check.
+                    // The UI watches for this flag, runs its full check, and writes
+                    // the cache back — giving us icon-enriched results for free.
+                    log::info!("UI is running — writing check trigger for UI to handle.");
+                    let _ = std::fs::write(check_trigger_path(), "1");
 
-                // Write results to cache file so UI can display a badge on
-                // next startup without waiting for a fresh check.
-                let cache = serde_json::json!({
-                    "total":           count,
-                    "packages":        result.packages,
-                    "flatpak":         result.flatpak,
-                    "appimages":       result.appimages,
-                    "image_available": result.image_available,
-                    "image_info":      result.image_info,
-                });
-                let cache_path = daemon_cache_path();
-                log::info!("Writing update cache to {:?}", cache_path);
-                if let Some(parent) = cache_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    // Spawn a background task that waits for the UI to write the
+                    // cache (mtime change) and then syncs the badge count.
+                    let tray_c = tray_handle.clone();
+                    let cache_path = daemon_cache_path();
+                    let initial_mtime = std::fs::metadata(&cache_path)
+                        .and_then(|m| m.modified()).ok();
+                    tokio::spawn(async move {
+                        // Poll up to 3 minutes (36 × 5 s) for the UI to complete its check.
+                        for _ in 0..36u32 {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            let mtime = std::fs::metadata(&cache_path)
+                                .and_then(|m| m.modified()).ok();
+                            if mtime.is_some() && mtime != initial_mtime {
+                                if let Ok(j) = std::fs::read_to_string(&cache_path) {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&j) {
+                                        let count = v["total"].as_i64().unwrap_or(0) as usize;
+                                        tray_c.update(|t| t.update_count = count);
+                                        log::info!("Badge synced from UI cache: {} update(s)", count);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    });
+                } else {
+                    // UI is not running — run our own check so the badge and
+                    // notifications still work even when the window is closed.
+                    log::info!("UI not running — running own update check.");
+                    let settings = Settings::load();
+                    let result = run_checks(&settings).await;
+                    let count = result.total;
+
+                    let cache = serde_json::json!({
+                        "total":           count,
+                        "packages":        result.packages,
+                        "flatpak":         result.flatpak,
+                        "appimages":       result.appimages,
+                        "image_available": result.image_available,
+                        "image_info":      result.image_info,
+                    });
+                    let cache_path = daemon_cache_path();
+                    if let Some(parent) = cache_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&cache_path,
+                        serde_json::to_string_pretty(&cache).unwrap_or_default());
+
+                    tray_handle.update(|t| t.update_count = count);
+
+                    if let Some(body) = result.notification_body() {
+                        send_notification("Updates Available", &body).await;
+                    }
+
+                    log::info!("Own check complete: {} update(s) found.", count);
                 }
-                match std::fs::write(&cache_path, serde_json::to_string_pretty(&cache).unwrap_or_default()) {
-                    Ok(_)  => log::info!("Cache written successfully ({} total update(s))", count),
-                    Err(e) => log::error!("Failed to write cache: {}", e),
-                }
-
-                // Update tray icon/tooltip
-                tray_handle.update(|t| t.update_count = count);
-
-                // Desktop notification if updates found
-                if let Some(body) = result.notification_body() {
-                    send_notification("Updates Available", &body).await;
-                }
-
-                log::info!("Check complete: {} update(s) found.", count);
             }
         }
     }

@@ -175,9 +175,20 @@ pub fn upgrade_packages_stream() -> impl Iterator<Item = String> {
     run_stream_owned(vec!["sudo".into(), "/usr/libexec/rakuos/rakuos-update".into(), "upgrade".into()])
 }
 
-/// Stream output from `bootc rollback`.
+/// Stream output from `bootc rollback` followed by a soft overlay reset.
+/// Both run via pkexec so the user is prompted for auth once per command.
+/// The overlay soft-reset ensures the overlay is rebuilt from the packages
+/// list on next boot, preventing stale packages after an image rollback.
 pub fn rollback_stream() -> impl Iterator<Item = String> {
-    run_stream_owned(vec!["sudo".into(), "bootc".into(), "rollback".into()])
+    let rollback = run_stream_owned(vec![
+        "pkexec".into(), "bootc".into(), "rollback".into(),
+    ]);
+    let soft_reset = run_stream_owned(vec![
+        "pkexec".into(),
+        "/usr/libexec/rakuos/rakuos-reset-overlay".into(),
+        "--soft".into(),
+    ]);
+    rollback.chain(soft_reset)
 }
 
 /// Check for overlay package updates using `rakuos-update check`.
