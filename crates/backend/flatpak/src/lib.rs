@@ -191,6 +191,17 @@ pub fn get_all_updates() -> Vec<FlatpakUpdate> {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
     let appstream = rakuos_appstream::get_appstream();
 
+    // Build a flatpak-specific lookup keyed by app id, same as get_installed().
+    // Iterating .values() and filtering by source avoids the key-collision problem
+    // where apps with both a native RPM and a flatpak are stored under a plain key
+    // (native wins) plus a "flatpak:{id}" key — a direct appstream.get(&app_id)
+    // would return the native entry which has no flatpak icon_path.
+    let flatpak_meta: HashMap<&str, &rakuos_appstream::AppInfo> = appstream
+        .values()
+        .filter(|a| a.source == "flatpak")
+        .map(|a| (a.id.as_str(), a))
+        .collect();
+
     json["updates"]
         .as_array()
         .map(|arr| {
@@ -198,8 +209,9 @@ pub fn get_all_updates() -> Vec<FlatpakUpdate> {
                 .filter_map(|v| {
                     let app_id = v["app_id"].as_str()?.to_string();
                     if app_id.is_empty() { return None; }
-                    // Look up icon from AppStream cache (same resolution used by installed page)
-                    let (icon_path, icon_url) = appstream.get(&app_id)
+                    // Look up via flatpak-filtered map so the flatpak icon is always used,
+                    // even for apps that also have a native RPM in the AppStream cache.
+                    let (icon_path, icon_url) = flatpak_meta.get(app_id.as_str())
                         .map(|a| (a.icon_path.clone(), a.icon_url.clone()))
                         .unwrap_or_default();
                     Some(FlatpakUpdate {

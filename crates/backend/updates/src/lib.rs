@@ -21,6 +21,9 @@ pub struct SystemStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateInfo {
     pub available: bool,
+    /// True when a staged image is waiting for reboot (digest differs from booted).
+    /// When set, `available` is false and the UI should show a reboot prompt.
+    pub reboot_required: bool,
     pub latest_version: String,
     pub latest_digest: String,
     pub current_version: String,
@@ -116,6 +119,7 @@ pub async fn check_for_update() -> UpdateInfo {
 
             UpdateInfo {
                 available: update_available,
+                reboot_required: false,
                 current_version: status.version.clone(),
                 current_digest: status.digest.clone(),
                 latest_version: version_annotation,
@@ -192,6 +196,37 @@ pub fn check_packages_script() -> Vec<serde_json::Value> {
 /// Returns (update_available, raw_json_value).
 /// This matches what the daemon uses and produces the same cache format.
 pub fn check_image_script() -> (bool, serde_json::Value) {
+    // Before checking for new updates, see if bootc already has a staged image
+    // waiting for reboot (digest differs from booted).  If so, no need to hit
+    // GHCR — just tell the UI to prompt for a reboot.
+    if let Ok(status_out) = Command::new("bootc")
+        .args(["status", "--json"])
+        .output()
+    {
+        if let Ok(status) = serde_json::from_slice::<serde_json::Value>(&status_out.stdout) {
+            let booted_digest = status["status"]["booted"]["image"]["imageDigest"]
+                .as_str().unwrap_or("");
+            let staged_digest = status["status"]["staged"]["image"]["imageDigest"]
+                .as_str().unwrap_or("");
+            if !staged_digest.is_empty()
+                && !booted_digest.is_empty()
+                && staged_digest != booted_digest
+            {
+                let booted_ver = status["status"]["booted"]["image"]["version"]
+                    .as_str().unwrap_or("").to_string();
+                let staged_ver = status["status"]["staged"]["image"]["version"]
+                    .as_str().unwrap_or("").to_string();
+                return (false, serde_json::json!({
+                    "update":          false,
+                    "reboot_required": true,
+                    "booted":          booted_ver,
+                    "available":       staged_ver,
+                }));
+            }
+        }
+    }
+
+    // No pending staged image — check GHCR/bootc for available updates.
     let out = Command::new("/usr/libexec/rakuos/rakuos-update")
         .arg("check-image")
         .output();
@@ -216,19 +251,25 @@ pub fn schedule_reboot() -> (bool, String) {
 /// Get overlay package count and dirty/digest state.
 pub fn get_overlay_status() -> OverlayStatus {
     let packages_list = Path::new("/var/lib/rakuos/packages.list");
+    let rpm_list      = Path::new("/var/lib/rakuos/packages-rpm.list");
     let state_file    = Path::new("/var/lib/rakuos/overlay.state");
     let dirty_file    = Path::new("/var/lib/rakuos/overlay.dirty");
 
-    let packages: Vec<String> = if packages_list.exists() {
-        std::fs::read_to_string(packages_list)
+    let read_list = |p: &Path| -> Vec<String> {
+        if !p.exists() { return Vec::new(); }
+        std::fs::read_to_string(p)
             .unwrap_or_default()
             .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect()
-    } else {
-        Vec::new()
     };
+
+    let mut packages = read_list(packages_list);
+    packages.extend(read_list(rpm_list));
+    // Sort A-Z (case-insensitive), deduplicate
+    packages.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    packages.dedup();
 
     OverlayStatus {
         package_count: packages.len(),
@@ -236,6 +277,27 @@ pub fn get_overlay_status() -> OverlayStatus {
         has_digest: state_file.exists(),
         is_dirty: dirty_file.exists(),
     }
+}
+
+/// Stream output from `pkexec bootc upgrade` (system image upgrade with polkit auth).
+pub fn pkexec_upgrade_stream() -> impl Iterator<Item = String> {
+    run_stream_owned(vec!["pkexec".into(), "bootc".into(), "upgrade".into()])
+}
+
+/// Stream output from `pkexec bootc switch <target>` (DE/image switch with polkit auth).
+pub fn pkexec_switch_stream(target: &str) -> impl Iterator<Item = String> {
+    run_stream_owned(vec!["pkexec".into(), "bootc".into(), "switch".into(), target.to_string()])
+}
+
+/// Run overlay reset via pkexec and stream output.
+/// mode: "soft" → --soft (preserves packages.list), "full" → --confirm (wipes everything).
+pub fn reset_overlay_stream(mode: &str) -> impl Iterator<Item = String> {
+    let flag = if mode == "soft" { "--soft" } else { "--confirm" };
+    run_stream_owned(vec![
+        "pkexec".into(),
+        "/usr/libexec/rakuos/rakuos-reset-overlay".into(),
+        flag.into(),
+    ])
 }
 
 // ── Internals ─────────────────────────────────────────────────────────────────

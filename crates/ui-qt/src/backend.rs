@@ -450,12 +450,6 @@ pub struct SoftwareBackend {
                 .output()
                 .ok();
 
-            // Check flatpak via rakuos-update script
-            let fp_out = Command::new("/usr/libexec/rakuos/rakuos-update")
-                .arg("check-flatpak")
-                .output()
-                .ok();
-
             let pkg_updates: Vec<serde_json::Value> = {
                 let raw: Vec<serde_json::Value> = pkg_out
                     .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
@@ -463,14 +457,20 @@ pub struct SoftwareBackend {
                     .unwrap_or_default();
                 // Enrich with icon paths using the AppStream cache (same source as installed page)
                 let appstream = rakuos_appstream::get_appstream();
-                let pkg_icons: std::collections::HashMap<String, (String, String)> = appstream
-                    .values()
-                    .filter(|a| !a.package_name.is_empty())
-                    .fold(std::collections::HashMap::new(), |mut m, a| {
-                        m.entry(a.package_name.clone())
-                            .or_insert_with(|| (a.icon_path.clone(), a.icon_url.clone()));
-                        m
-                    });
+                // Build pkg_name → (icon_path, icon_url) map.  Prefer entries with a
+                // non-empty icon_path so that a flatpak entry with no local icon doesn't
+                // shadow a native entry that has one (HashMap iteration order is undefined).
+                let mut pkg_icons: std::collections::HashMap<String, (String, String)> =
+                    std::collections::HashMap::new();
+                for a in appstream.values().filter(|a| !a.package_name.is_empty()) {
+                    let entry = pkg_icons.entry(a.package_name.clone())
+                        .or_insert_with(|| (a.icon_path.clone(), a.icon_url.clone()));
+                    if entry.0.is_empty() && entry.1.is_empty() {
+                        *entry = (a.icon_path.clone(), a.icon_url.clone());
+                    } else if entry.0.is_empty() && !a.icon_path.is_empty() {
+                        entry.0 = a.icon_path.clone();
+                    }
+                }
                 raw.into_iter().map(|mut v| {
                     if let Some(name) = v["name"].as_str().map(|s| s.to_string()) {
                         if let Some((ip, iu)) = pkg_icons.get(&name) {
@@ -482,13 +482,17 @@ pub struct SoftwareBackend {
                 }).collect()
             };
 
-            let fp_updates: Vec<serde_json::Value> = fp_out
-                .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-                .and_then(|v| v["updates"].as_array().cloned())
-                .unwrap_or_default();
+            // Use get_all_updates() so flatpak entries are icon-enriched via the
+            // AppStream cache (same path as the installed page).  Direct script
+            // parsing skips that enrichment and leaves icon_path empty.
+            let fp_updates: Vec<serde_json::Value> = rakuos_flatpak::get_all_updates()
+                .into_iter()
+                .filter_map(|f| serde_json::to_value(f).ok())
+                .collect();
 
-            // Check image update via rakuos-update check-image (same as daemon)
+            // Check image update — also detects staged images waiting for reboot.
             let (image_available, image_info) = rakuos_updates::check_image_script();
+            let reboot_required = image_info["reboot_required"].as_bool().unwrap_or(false);
 
             let total = pkg_updates.len() + fp_updates.len()
                 + if image_available { 1 } else { 0 };
@@ -498,6 +502,7 @@ pub struct SoftwareBackend {
                 "flatpak":         fp_updates,
                 "appimages":       [],
                 "image_available": image_available,
+                "reboot_required": reboot_required,
                 "image_info":      image_info,
                 "total": total,
             });
@@ -659,6 +664,33 @@ pub struct SoftwareBackend {
                 shared.result.store(if success { 1 } else { 2 }, Ordering::Relaxed);
             } else {
                 shared.result.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+            }
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    resetOverlay: qt_method!(fn resetOverlay(&mut self, mode: QString) {
+        let mode = mode.to_string();
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            use std::process::Command;
+            let flag = if mode == "soft" { "--soft" } else { "--confirm" };
+            let _ = std::fs::write(log_path(), format!("Running overlay reset ({mode})...\n"));
+            let out = Command::new("pkexec")
+                .args(["/usr/libexec/rakuos/rakuos-reset-overlay", flag])
+                .output();
+            match out {
+                Ok(o) => {
+                    let msg = String::from_utf8_lossy(&o.stdout).to_string()
+                        + &String::from_utf8_lossy(&o.stderr);
+                    let _ = std::fs::write(log_path(), msg);
+                    shared.result.store(if o.status.success() { 1 } else { 2 }, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    let _ = std::fs::write(log_path(), e.to_string());
+                    shared.result.store(2, Ordering::Relaxed);
+                }
             }
             shared.running.store(false, Ordering::Relaxed);
         });

@@ -1,13 +1,41 @@
-// pages/system.rs — System info and management page
+// pages/system.rs — System info and management page (matches Qt SystemPage layout)
 
 use gtk4::prelude::*;
-use gtk4::{glib, Align, Box as GBox, Button, Label, Orientation, ScrolledWindow, Widget};
+use gtk4::{
+    glib, Align, Box as GBox, Button, DropDown, Label, Orientation,
+    ScrolledWindow, Separator, StringList, Widget,
+};
 use libadwaita::prelude::*;
-use libadwaita::{ActionRow, PreferencesGroup, PreferencesPage};
+use libadwaita::{ActionRow, Dialog, HeaderBar, PreferencesGroup, ToolbarView};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use rakuos_updates::{OverlayStatus, SystemStatus};
+
+const DE_LABELS: &[(&str, &str)] = &[
+    ("KDE Plasma", "rakuos-kde"),
+    ("GNOME",      "rakuos-gnome"),
+    ("COSMIC",     "rakuos-cosmic"),
+];
+
+fn parse_image_name(image: &str) -> (String, bool) {
+    // "ghcr.io/owner/rakuos-kde-nvidia:20240101" → ("rakuos-kde-nvidia", true)
+    let name = image.split(':').next().unwrap_or("").split('/').last().unwrap_or("").to_string();
+    let is_nvidia = name.ends_with("-nvidia");
+    (name, is_nvidia)
+}
+
+fn de_label_from_image(image: &str) -> String {
+    let (name, is_nvidia) = parse_image_name(image);
+    let base = name.trim_end_matches("-nvidia");
+    let label = DE_LABELS.iter()
+        .find(|(_, id)| *id == base)
+        .map(|(lbl, _)| *lbl)
+        .unwrap_or(base);
+    if is_nvidia { format!("{} (Nvidia)", label) } else { label.to_string() }
+}
 
 pub fn build() -> Widget {
     let scroll = ScrolledWindow::builder()
@@ -16,125 +44,184 @@ pub fn build() -> Widget {
         .vexpand(true)
         .build();
 
-    let pref_page = PreferencesPage::new();
-    scroll.set_child(Some(&pref_page));
+    let outer = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(16)
+        .margin_top(20)
+        .margin_bottom(20)
+        .margin_start(20)
+        .margin_end(20)
+        .build();
+    scroll.set_child(Some(&outer));
 
-    // ── System Info group ─────────────────────────────────────────────────
-    let sys_group = PreferencesGroup::builder()
-        .title("System Information")
+    let title = Label::builder()
+        .label("System")
+        .halign(Align::Start)
+        .css_classes(vec!["title-1".to_string()])
+        .build();
+    outer.append(&title);
+
+    // ── Booted Image ──────────────────────────────────────────────────────────
+    let image_group = PreferencesGroup::builder()
+        .title("Booted Image")
         .build();
 
-    // OS version row
-    let os_row = ActionRow::builder()
-        .title("OS Image")
+    let image_row     = ActionRow::builder().title("OS Image").subtitle("Loading…").build();
+    let version_row   = ActionRow::builder().title("Version").subtitle("Loading…").build();
+    let digest_row    = ActionRow::builder().title("Digest").subtitle("Loading…").build();
+    let timestamp_row = ActionRow::builder().title("Timestamp").subtitle("Loading…").build();
+    let nvidia_row    = ActionRow::builder().title("Nvidia").subtitle("No").build();
+    image_group.add(&image_row);
+    image_group.add(&version_row);
+    image_group.add(&digest_row);
+    image_group.add(&timestamp_row);
+    image_group.add(&nvidia_row);
+
+    // Action buttons row
+    let img_btn_row = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(8)
+        .margin_bottom(4)
+        .build();
+
+    let rollback_btn = Button::builder()
+        .label("Rollback")
+        .css_classes(vec!["pill".to_string()])
+        .build();
+    let img_reboot_btn = Button::builder()
+        .label("Reboot to Apply")
+        .css_classes(vec!["suggested-action".to_string(), "pill".to_string()])
+        .visible(false)
+        .build();
+    let img_status_lbl = Label::builder()
+        .halign(Align::Start)
+        .hexpand(true)
+        .css_classes(vec!["caption".to_string()])
+        .visible(false)
+        .build();
+
+    img_btn_row.append(&rollback_btn);
+    img_btn_row.append(&img_reboot_btn);
+    img_btn_row.append(&img_status_lbl);
+    image_group.add(&img_btn_row);
+
+    outer.append(&image_group);
+
+    // ── Desktop Environment ───────────────────────────────────────────────────
+    let de_group = PreferencesGroup::builder()
+        .title("Desktop Environment")
+        .build();
+
+    let current_de_row = ActionRow::builder()
+        .title("Current")
         .subtitle("Loading…")
         .build();
-    sys_group.add(&os_row);
+    de_group.add(&current_de_row);
 
-    let version_row = ActionRow::builder()
-        .title("Version")
-        .subtitle("Loading…")
+    let de_switch_row = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(4)
+        .margin_bottom(4)
         .build();
-    sys_group.add(&version_row);
 
-    let digest_row = ActionRow::builder()
-        .title("Image Digest")
-        .subtitle("Loading…")
+    let de_lbl = Label::builder()
+        .label("Switch to:")
+        .halign(Align::Start)
+        .css_classes(vec!["dim-label".to_string()])
         .build();
-    sys_group.add(&digest_row);
-
-    // Kernel version
-    let kernel_version = get_kernel_version();
-    let kernel_row = ActionRow::builder()
-        .title("Kernel")
-        .subtitle(&kernel_version)
+    let de_list = StringList::new(&DE_LABELS.iter().map(|(l, _)| *l).collect::<Vec<_>>());
+    let de_combo = DropDown::builder()
+        .model(&de_list)
+        .hexpand(true)
         .build();
-    sys_group.add(&kernel_row);
-
-    // Flatpak version
-    let flatpak_version = get_flatpak_version();
-    let fp_row = ActionRow::builder()
-        .title("Flatpak")
-        .subtitle(&flatpak_version)
+    let switch_btn = Button::builder()
+        .label("Switch DE")
+        .css_classes(vec!["pill".to_string()])
         .build();
-    sys_group.add(&fp_row);
+    let switch_status_lbl = Label::builder()
+        .halign(Align::Start)
+        .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+        .visible(false)
+        .build();
 
-    pref_page.add(&sys_group);
+    de_switch_row.append(&de_lbl);
+    de_switch_row.append(&de_combo);
+    de_switch_row.append(&switch_btn);
+    de_switch_row.append(&switch_status_lbl);
+    de_group.add(&de_switch_row);
+    outer.append(&de_group);
 
-    // ── Overlay Packages group ────────────────────────────────────────────
+    // ── Overlay Packages ──────────────────────────────────────────────────────
     let overlay_group = PreferencesGroup::builder()
         .title("Overlay Packages")
         .description("Packages installed on top of the base OS image")
         .build();
 
-    let overlay_count_row = ActionRow::builder()
-        .title("Installed Overlay Packages")
-        .subtitle("Loading…")
+    // Header row: count + reset button
+    let overlay_hdr = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(4)
+        .margin_bottom(4)
         .build();
-    overlay_group.add(&overlay_count_row);
-
-    let overlay_dirty_row = ActionRow::builder()
-        .title("Overlay Status")
-        .subtitle("Loading…")
+    let overlay_count_lbl = Label::builder()
+        .label("Loading…")
+        .halign(Align::Start)
+        .hexpand(true)
+        .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
         .build();
-    overlay_group.add(&overlay_dirty_row);
-
-    pref_page.add(&overlay_group);
-
-    // ── Image Management group ────────────────────────────────────────────
-    let image_group = PreferencesGroup::builder()
-        .title("Image Management")
+    let reset_btn = Button::builder()
+        .label("Reset Overlay…")
+        .css_classes(vec!["pill".to_string(), "destructive-action".to_string()])
+        .halign(Align::End)
         .build();
-
-    let rollback_row = ActionRow::builder()
-        .title("Rollback to Previous Image")
-        .subtitle("Revert to the previously booted OS image")
+    let overlay_status_lbl = Label::builder()
+        .halign(Align::Start)
+        .css_classes(vec!["caption".to_string()])
+        .visible(false)
         .build();
-
-    let rollback_btn = Button::builder()
-        .label("Rollback")
-        .valign(Align::Center)
-        .css_classes(vec!["destructive-action".to_string()])
+    let overlay_reboot_btn = Button::builder()
+        .label("Reboot to Apply")
+        .css_classes(vec!["suggested-action".to_string(), "pill".to_string()])
+        .halign(Align::End)
+        .visible(false)
         .build();
 
-    rollback_btn.connect_clicked(move |btn| {
-        btn.set_sensitive(false);
-        btn.set_label("Rolling back…");
-        let (tx, rx) = mpsc::channel::<()>();
-        std::thread::spawn(move || {
-            let _: Vec<_> = rakuos_updates::rollback_stream().collect();
-            let _ = tx.send(());
-        });
-        let btn_c = btn.clone();
-        glib::timeout_add_local(Duration::from_millis(50), move || {
-            match rx.try_recv() {
-                Ok(_) => {
-                    btn_c.set_label("Reboot to Apply");
-                    let _ = rakuos_updates::schedule_reboot();
-                    glib::ControlFlow::Break
-                }
-                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(_) => glib::ControlFlow::Break,
-            }
-        });
-    });
+    overlay_hdr.append(&overlay_count_lbl);
+    overlay_hdr.append(&overlay_status_lbl);
+    overlay_hdr.append(&overlay_reboot_btn);
+    overlay_hdr.append(&reset_btn);
+    overlay_group.add(&overlay_hdr);
+    overlay_group.add(&Separator::new(Orientation::Horizontal));
 
-    rollback_row.add_suffix(&rollback_btn);
-    image_group.add(&rollback_row);
+    // Package list box — populated after load
+    let pkg_list_box = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(2)
+        .margin_top(4)
+        .build();
+    let no_pkgs_lbl = Label::builder()
+        .label("No overlay packages installed.")
+        .halign(Align::Start)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    pkg_list_box.append(&no_pkgs_lbl);
+    overlay_group.add(&pkg_list_box);
 
-    pref_page.add(&image_group);
+    outer.append(&overlay_group);
 
-    // ── Firmware group ────────────────────────────────────────────────────
-    let firmware_group = PreferencesGroup::builder()
+    // ── Firmware ──────────────────────────────────────────────────────────────
+    let fw_group = PreferencesGroup::builder()
         .title("Firmware Updates")
         .description("Check for firmware updates via LVFS")
         .build();
 
-    let firmware_row = ActionRow::builder()
+    let fw_row = ActionRow::builder()
         .title("Check for Firmware Updates")
         .subtitle("Uses fwupdmgr to query LVFS")
         .build();
-
     let fw_btn = Button::builder()
         .label("Refresh")
         .valign(Align::Center)
@@ -146,102 +233,382 @@ pub fn build() -> Widget {
         btn.set_label("Checking…");
         let (tx, rx) = mpsc::channel::<()>();
         std::thread::spawn(move || {
-            let _ = std::process::Command::new("fwupdmgr")
-                .arg("refresh")
-                .status();
+            let _ = std::process::Command::new("fwupdmgr").arg("refresh").status();
             let _ = tx.send(());
         });
         let btn_c = btn.clone();
         glib::timeout_add_local(Duration::from_millis(50), move || {
             match rx.try_recv() {
-                Ok(_) => {
-                    btn_c.set_label("Refresh");
-                    btn_c.set_sensitive(true);
-                    glib::ControlFlow::Break
-                }
+                Ok(_) => { btn_c.set_label("Refresh"); btn_c.set_sensitive(true); glib::ControlFlow::Break }
                 Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                 Err(_) => glib::ControlFlow::Break,
             }
         });
     });
 
-    firmware_row.add_suffix(&fw_btn);
-    firmware_group.add(&firmware_row);
+    fw_row.add_suffix(&fw_btn);
+    fw_group.add(&fw_row);
+    outer.append(&fw_group);
 
-    pref_page.add(&firmware_group);
+    // ── Wire Rollback ─────────────────────────────────────────────────────────
+    {
+        let reboot_b  = img_reboot_btn.clone();
+        let status_l  = img_status_lbl.clone();
 
-    // ── Load system status in background ─────────────────────────────────
-    let (tx, rx) = mpsc::channel::<(SystemStatus, OverlayStatus)>();
+        rollback_btn.connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            btn.set_label("Rolling back…");
+            status_l.set_visible(false);
 
+            let (tx, rx) = mpsc::channel::<()>();
+            std::thread::spawn(move || {
+                let _: Vec<_> = rakuos_updates::rollback_stream().collect();
+                let _ = tx.send(());
+            });
+            let btn_c    = btn.clone();
+            let reboot_c = reboot_b.clone();
+            let status_c = status_l.clone();
+
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                match rx.try_recv() {
+                    Ok(_) => {
+                        btn_c.set_label("Rollback");
+                        btn_c.set_sensitive(true);
+                        reboot_c.set_visible(true);
+                        status_c.set_label("Rollback staged — reboot to apply.");
+                        status_c.set_visible(true);
+                        glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(_) => glib::ControlFlow::Break,
+                }
+            });
+        });
+    }
+
+    img_reboot_btn.connect_clicked(|_| { rakuos_updates::schedule_reboot(); });
+    overlay_reboot_btn.connect_clicked(|_| { rakuos_updates::schedule_reboot(); });
+
+    // ── Wire Switch DE ────────────────────────────────────────────────────────
+    // current_image shared state populated after load
+    let current_image_state: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    {
+        let img_state = Rc::clone(&current_image_state);
+        let combo_c   = de_combo.clone();
+        let status_c  = switch_status_lbl.clone();
+        let switch_c  = switch_btn.clone();
+        let reboot_c  = img_reboot_btn.clone();
+
+        switch_btn.connect_clicked(move |btn| {
+            let img = img_state.borrow().clone();
+            if img.is_empty() { return; }
+            let idx = combo_c.selected() as usize;
+            let Some(&(_, de_id)) = DE_LABELS.get(idx) else { return; };
+            let (_, is_nvidia) = parse_image_name(&img);
+            let new_name = if is_nvidia { format!("{}-nvidia", de_id) } else { de_id.to_string() };
+            // Derive base repo URL: strip everything from last '/' before ':'
+            let base = img.split(':').next().unwrap_or("");
+            let repo_base = base.rsplitn(2, '/').nth(1).unwrap_or(base);
+            let target = format!("{}/{}:latest", repo_base, new_name);
+
+            btn.set_sensitive(false);
+            btn.set_label("Switching…");
+            status_c.set_label(&format!("Switching to {}…", de_id));
+            status_c.set_visible(true);
+
+            let (tx, rx) = mpsc::channel::<()>();
+            std::thread::spawn(move || {
+                let _: Vec<_> = rakuos_updates::pkexec_switch_stream(&target).collect();
+                let _ = tx.send(());
+            });
+
+            let btn_c    = switch_c.clone();
+            let status_r = status_c.clone();
+            let reboot_r = reboot_c.clone();
+
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                match rx.try_recv() {
+                    Ok(_) => {
+                        btn_c.set_label("Switch DE");
+                        btn_c.set_sensitive(true);
+                        reboot_r.set_visible(true);
+                        status_r.set_label("Switch staged — reboot to apply.");
+                        glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(_) => glib::ControlFlow::Break,
+                }
+            });
+        });
+    }
+
+    // ── Wire Reset Overlay ────────────────────────────────────────────────────
+    {
+        let reset_b      = reset_btn.clone();
+        let ovl_status   = overlay_status_lbl.clone();
+        let ovl_reboot   = overlay_reboot_btn.clone();
+
+        reset_btn.connect_clicked(move |_| {
+            show_reset_dialog(
+                reset_b.upcast_ref::<gtk4::Widget>(),
+                ovl_status.clone(),
+                ovl_reboot.clone(),
+            );
+        });
+    }
+
+    // ── Load system status ────────────────────────────────────────────────────
+    {
+        let (tx, rx) = mpsc::channel::<(SystemStatus, OverlayStatus)>();
+        std::thread::spawn(move || {
+            let status  = rakuos_updates::get_system_status();
+            let overlay = rakuos_updates::get_overlay_status();
+            let _ = tx.send((status, overlay));
+        });
+
+        let img_state = Rc::clone(&current_image_state);
+
+        glib::timeout_add_local(Duration::from_millis(80), move || {
+            match rx.try_recv() {
+                Ok((status, overlay)) => {
+                    img_state.replace(status.image.clone());
+
+                    image_row.set_subtitle(if status.image.is_empty() { "Unknown" } else { &status.image });
+                    version_row.set_subtitle(if status.version.is_empty() { "Unknown" } else { &status.version });
+                    digest_row.set_subtitle(if status.digest.is_empty() {
+                        "Unknown".to_string()
+                    } else {
+                        format!("{}…", &status.digest[..status.digest.len().min(24)])
+                    }.as_str());
+                    timestamp_row.set_subtitle(if status.timestamp.is_empty() { "Unknown" } else { &status.timestamp });
+                    let (_, is_nvidia) = parse_image_name(&status.image);
+                    nvidia_row.set_subtitle(if is_nvidia { "Yes" } else { "No" });
+
+                    // Set DE combo to current DE
+                    let (name, _) = parse_image_name(&status.image);
+                    let base = name.trim_end_matches("-nvidia");
+                    if let Some(idx) = DE_LABELS.iter().position(|(_, id)| *id == base) {
+                        de_combo.set_selected(idx as u32);
+                    }
+                    current_de_row.set_subtitle(&de_label_from_image(&status.image));
+
+                    // Overlay packages
+                    overlay_count_lbl.set_label(&format!(
+                        "{} package{}", overlay.package_count,
+                        if overlay.package_count == 1 { "" } else { "s" }
+                    ));
+
+                    // Remove placeholder
+                    if let Some(c) = pkg_list_box.first_child() {
+                        pkg_list_box.remove(&c);
+                    }
+                    if overlay.packages.is_empty() {
+                        pkg_list_box.append(&no_pkgs_lbl);
+                    } else {
+                        for pkg in &overlay.packages {
+                            let row = ActionRow::builder()
+                                .title(pkg.as_str())
+                                .build();
+                            pkg_list_box.append(&row);
+                        }
+                    }
+
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
+        });
+    }
+
+    scroll.upcast()
+}
+
+// ── Reset Overlay dialog ──────────────────────────────────────────────────────
+
+fn show_reset_dialog(
+    parent_widget: &gtk4::Widget,
+    status_lbl:    Label,
+    reboot_btn:    Button,
+) {
+    let dialog = Dialog::builder()
+        .title("Reset Overlay")
+        .build();
+
+    let content = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(16)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(20)
+        .margin_end(20)
+        .build();
+
+    let header = HeaderBar::new();
+    let toolbar = ToolbarView::builder().content(&content).build();
+    toolbar.add_top_bar(&header);
+    dialog.set_child(Some(&toolbar));
+
+    let intro = Label::builder()
+        .label("Choose how to reset the overlay. Both options require a reboot.\npkexec will prompt for your password.")
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    content.append(&intro);
+
+    // Soft Reset card
+    let soft_card = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(6)
+        .css_classes(vec!["card".to_string()])
+        .margin_top(4)
+        .build();
+    let soft_inner = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(12).margin_bottom(12).margin_start(12).margin_end(12)
+        .build();
+    let soft_text = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .build();
+    let soft_title = Label::builder()
+        .label("Soft Reset (Rebuild)")
+        .halign(Align::Start)
+        .css_classes(vec!["heading".to_string()])
+        .build();
+    let soft_desc = Label::builder()
+        .label("Wipes the overlay and reinstalls all packages\nfrom your packages list on next boot.\nYour installed package list is preserved.")
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    let soft_btn = Button::builder()
+        .label("Soft Reset")
+        .valign(Align::Center)
+        .css_classes(vec!["pill".to_string(), "suggested-action".to_string()])
+        .build();
+    soft_text.append(&soft_title);
+    soft_text.append(&soft_desc);
+    soft_inner.append(&soft_text);
+    soft_inner.append(&soft_btn);
+    soft_card.append(&soft_inner);
+    content.append(&soft_card);
+
+    // Full Reset card
+    let full_card = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(6)
+        .css_classes(vec!["card".to_string()])
+        .build();
+    let full_inner = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(12).margin_bottom(12).margin_start(12).margin_end(12)
+        .build();
+    let full_text = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .build();
+    let full_title = Label::builder()
+        .label("Full Reset (Stock)")
+        .halign(Align::Start)
+        .css_classes(vec!["heading".to_string()])
+        .build();
+    let full_desc = Label::builder()
+        .label("Completely wipes the overlay and your packages list.\nThe system returns to the base image state.\nAll installed packages will be removed.")
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    let full_btn = Button::builder()
+        .label("Full Reset")
+        .valign(Align::Center)
+        .css_classes(vec!["pill".to_string(), "destructive-action".to_string()])
+        .build();
+    full_text.append(&full_title);
+    full_text.append(&full_desc);
+    full_inner.append(&full_text);
+    full_inner.append(&full_btn);
+    full_card.append(&full_inner);
+    content.append(&full_card);
+
+    // Wire Soft Reset button
+    {
+        let d      = dialog.clone();
+        let s_lbl  = status_lbl.clone();
+        let r_btn  = reboot_btn.clone();
+
+        soft_btn.connect_clicked(move |_| {
+            let _ = d.close();
+            run_overlay_reset("soft", s_lbl.clone(), r_btn.clone());
+        });
+    }
+
+    // Wire Full Reset button
+    {
+        let d     = dialog.clone();
+        let s_lbl = status_lbl.clone();
+        let r_btn = reboot_btn.clone();
+
+        full_btn.connect_clicked(move |_| {
+            let _ = d.close();
+            run_overlay_reset("full", s_lbl.clone(), r_btn.clone());
+        });
+    }
+
+    let parent_window = parent_widget
+        .root()
+        .and_then(|r| r.downcast::<gtk4::Window>().ok());
+    dialog.present(parent_window.as_ref());
+}
+
+fn run_overlay_reset(mode: &'static str, status_lbl: Label, reboot_btn: Button) {
+    status_lbl.set_label("Running reset…");
+    status_lbl.remove_css_class("success");
+    status_lbl.remove_css_class("error");
+    status_lbl.set_visible(true);
+    reboot_btn.set_visible(false);
+
+    let (tx, rx) = mpsc::channel::<bool>();
     std::thread::spawn(move || {
-        let status = rakuos_updates::get_system_status();
-        let overlay = rakuos_updates::get_overlay_status();
-        let _ = tx.send((status, overlay));
+        let success = rakuos_updates::reset_overlay_stream(mode)
+            .last()
+            .map(|last| !last.starts_with("__done__2"))
+            .unwrap_or(true);
+        let _ = tx.send(success);
     });
 
     glib::timeout_add_local(Duration::from_millis(80), move || {
         match rx.try_recv() {
-            Ok((status, overlay)) => {
-                if !status.image.is_empty() {
-                    os_row.set_subtitle(&status.image);
+            Ok(ok) => {
+                if ok {
+                    status_lbl.set_label("Reset scheduled — reboot to apply.");
+                    status_lbl.add_css_class("success");
+                    reboot_btn.set_visible(true);
                 } else {
-                    os_row.set_subtitle("Unknown");
+                    status_lbl.set_label("Reset failed. Check system logs.");
+                    status_lbl.add_css_class("error");
                 }
-
-                if !status.version.is_empty() {
-                    version_row.set_subtitle(&status.version);
-                } else {
-                    version_row.set_subtitle("Unknown");
-                }
-
-                if !status.digest.is_empty() {
-                    let short = if status.digest.len() > 20 {
-                        format!("{}…", &status.digest[..20])
-                    } else {
-                        status.digest.clone()
-                    };
-                    digest_row.set_subtitle(&short);
-                } else {
-                    digest_row.set_subtitle("Unknown");
-                }
-
-                overlay_count_row.set_subtitle(&format!("{} packages", overlay.package_count));
-
-                let overlay_status_text = if overlay.is_dirty {
-                    "Modified (sync recommended)"
-                } else if overlay.has_digest {
-                    "In sync with base image"
-                } else {
-                    "No overlay state recorded"
-                };
-                overlay_dirty_row.set_subtitle(overlay_status_text);
-
                 glib::ControlFlow::Break
             }
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
             Err(_) => glib::ControlFlow::Break,
         }
     });
-
-    scroll.upcast()
 }
 
-fn get_kernel_version() -> String {
-    std::process::Command::new("uname")
-        .arg("-r")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "Unknown".to_string())
-}
-
-fn get_flatpak_version() -> String {
-    std::process::Command::new("flatpak")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "Not installed".to_string())
+fn parse_bootc_progress(line: &str) -> Option<f64> {
+    // "[N/M] ..." style from bootc/skopeo output
+    let trimmed = line.trim();
+    let bracket_start = trimmed.find('[')?;
+    let bracket_end   = trimmed[bracket_start..].find(']')?;
+    let inner = &trimmed[bracket_start + 1..bracket_start + bracket_end];
+    let slash = inner.find('/')?;
+    let n: f64 = inner[..slash].trim().parse().ok()?;
+    let total: f64 = inner[slash + 1..].trim().parse().ok()?;
+    if total > 0.0 { Some((n / total).min(1.0)) } else { None }
 }

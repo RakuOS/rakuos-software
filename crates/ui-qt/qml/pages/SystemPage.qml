@@ -12,6 +12,8 @@ Item {
     property string upgradeLog: ""
     property string opStatusMsg: ""
     property bool opSuccess: false
+    property bool overlayResetRunning: false
+    property bool overlayResetSuccess: false
 
     // Available DE images (matching Python RAKUOS_IMAGES)
     property var deImages: [
@@ -158,18 +160,6 @@ Item {
                             font.pixelSize: 15
                             font.bold: true
                             Layout.fillWidth: true
-                        }
-
-                        BusyIndicator {
-                            running: upgrading
-                            visible: upgrading
-                            implicitWidth: 22; implicitHeight: 22
-                        }
-
-                        Button {
-                            text: "Upgrade System"
-                            visible: !upgrading && !rebootRequired
-                            onClicked: startUpgrade()
                         }
 
                         Button {
@@ -404,11 +394,27 @@ Item {
 
                         Item { width: 8 }
 
+                        BusyIndicator {
+                            running: overlayResetRunning
+                            visible: overlayResetRunning
+                            implicitWidth: 22; implicitHeight: 22
+                        }
+
                         Button {
+                            visible: !overlayResetRunning && !overlayResetSuccess
                             flat: true
                             implicitWidth: 110; implicitHeight: 32
                             contentItem: Label { text: "Reset Overlay"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             onClicked: overlayResetConfirmDlg.open()
+                        }
+
+                        Button {
+                            visible: overlayResetSuccess
+                            highlighted: true
+                            implicitWidth: 140; implicitHeight: 32
+                            background: Rectangle { color: "#1976d2"; radius: 4 }
+                            contentItem: Label { text: "🔄 Reboot to Apply"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: backend.rebootSystem()
                         }
                     }
 
@@ -465,23 +471,145 @@ Item {
         }
     }
 
-    // ── Overlay reset confirm dialog ──────────────────────────────────────────
+    // ── Overlay reset dialog ──────────────────────────────────────────────────
     Dialog {
         id: overlayResetConfirmDlg
-        title: "Reset Overlay Packages?"
+        title: "Reset Overlay"
         modal: true
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        standardButtons: Dialog.Cancel
+        width: 420
 
-        Label {
-            text: "This will remove all overlay packages and reset\nthe system to the base image state.\nA reboot will be required."
-            wrapMode: Text.WordWrap
-            width: 320
+        property string pendingMode: ""
+
+        Column {
+            spacing: 16
+            width: 380
+
+            Label {
+                width: parent.width
+                text: "Choose how to reset the overlay. Both options require a reboot to take effect. pkexec will prompt for your password."
+                wrapMode: Text.WordWrap
+                color: root.dimText
+                font.pixelSize: 12
+            }
+
+            // Soft Reset option
+            Rectangle {
+                width: parent.width
+                height: softCol.implicitHeight + 20
+                radius: 6
+                color: palette.button
+                border.color: palette.mid
+                border.width: 1
+
+                Column {
+                    id: softCol
+                    anchors { fill: parent; margins: 10 }
+                    spacing: 6
+
+                    RowLayout {
+                        width: parent.width
+
+                        Column {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Label { text: "Soft Reset (Rebuild)"; font.pixelSize: 13; font.bold: true }
+                            Label {
+                                width: parent.width
+                                text: "Wipes the overlay and reinstalls all packages from your packages list on next boot. Your installed package list is preserved."
+                                wrapMode: Text.WordWrap
+                                color: root.dimText
+                                font.pixelSize: 11
+                            }
+                        }
+
+                        Button {
+                            text: "Soft Reset"
+                            background: Rectangle { color: "#1565c0"; radius: 4 }
+                            contentItem: Label { text: "Soft Reset"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: {
+                                overlayResetConfirmDlg.pendingMode = "soft";
+                                overlayResetConfirmDlg.close();
+                                overlayResetRunning = true;
+                                overlayResetSuccess = false;
+                                overlayStatusLbl.text = "Running soft reset…";
+                                overlayResetPollTimer.start();
+                                backend.resetOverlay("soft");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Full Reset option
+            Rectangle {
+                width: parent.width
+                height: fullCol.implicitHeight + 20
+                radius: 6
+                color: palette.button
+                border.color: "#b71c1c"
+                border.width: 1
+
+                Column {
+                    id: fullCol
+                    anchors { fill: parent; margins: 10 }
+                    spacing: 6
+
+                    RowLayout {
+                        width: parent.width
+
+                        Column {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Label { text: "Full Reset (Stock)"; font.pixelSize: 13; font.bold: true; color: "#e53935" }
+                            Label {
+                                width: parent.width
+                                text: "Completely wipes the overlay and your packages list. The system returns to the base image state. All installed packages will be removed."
+                                wrapMode: Text.WordWrap
+                                color: root.dimText
+                                font.pixelSize: 11
+                            }
+                        }
+
+                        Button {
+                            text: "Full Reset"
+                            background: Rectangle { color: "#b71c1c"; radius: 4 }
+                            contentItem: Label { text: "Full Reset"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: {
+                                overlayResetConfirmDlg.pendingMode = "full";
+                                overlayResetConfirmDlg.close();
+                                overlayResetRunning = true;
+                                overlayResetSuccess = false;
+                                overlayStatusLbl.text = "Running full reset…";
+                                overlayResetPollTimer.start();
+                                backend.resetOverlay("full");
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        onAccepted: {
-            // Reset overlay via pkexec
-            backend.installApp("__reset_overlay__", "native");
-            overlayStatusLbl.text = "Resetting overlay…";
+    Timer {
+        id: overlayResetPollTimer
+        interval: 400
+        repeat: true
+        onTriggered: {
+            backend.pollOp();
+            if (!backend.opRunning) {
+                overlayResetPollTimer.stop();
+                overlayResetRunning = false;
+                if (backend.opResult === 1) {
+                    overlayResetSuccess = true;
+                    overlayStatusLbl.text = "Reset scheduled — reboot to apply.";
+                    overlayStatusLbl.color = "#4caf50";
+                } else {
+                    overlayResetSuccess = false;
+                    overlayStatusLbl.text = "Reset failed. Check system logs.";
+                    overlayStatusLbl.color = "#e53935";
+                }
+            }
         }
     }
 

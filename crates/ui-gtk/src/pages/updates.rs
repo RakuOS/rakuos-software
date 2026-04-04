@@ -271,14 +271,21 @@ fn load_updates(
         let raw_packages = rakuos_updates::check_packages_script();
         // Enrich package entries with icon paths from AppStream (same source as installed page)
         let appstream = rakuos_appstream::get_appstream();
-        let pkg_icons: std::collections::HashMap<String, (String, String)> = appstream
-            .values()
-            .filter(|a| !a.package_name.is_empty())
-            .fold(std::collections::HashMap::new(), |mut m, a| {
-                m.entry(a.package_name.clone())
-                    .or_insert_with(|| (a.icon_path.clone(), a.icon_url.clone()));
-                m
-            });
+        // Build pkg_name → (icon_path, icon_url) map.  Prefer entries with a
+        // non-empty icon_path so that a flatpak entry with no local icon doesn't
+        // shadow a native entry that has one (HashMap iteration order is undefined).
+        let mut pkg_icons: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new();
+        for a in appstream.values().filter(|a| !a.package_name.is_empty()) {
+            let entry = pkg_icons.entry(a.package_name.clone())
+                .or_insert_with(|| (a.icon_path.clone(), a.icon_url.clone()));
+            // Upgrade to a better icon if the stored entry has nothing
+            if entry.0.is_empty() && entry.1.is_empty() {
+                *entry = (a.icon_path.clone(), a.icon_url.clone());
+            } else if entry.0.is_empty() && !a.icon_path.is_empty() {
+                entry.0 = a.icon_path.clone();
+            }
+        }
         let packages: Vec<serde_json::Value> = raw_packages.into_iter().map(|mut v| {
             if let Some(name) = v["name"].as_str().map(|s| s.to_string()) {
                 if let Some((ip, iu)) = pkg_icons.get(&name) {
@@ -291,12 +298,14 @@ fn load_updates(
         drop(appstream);
         let flatpaks = rakuos_flatpak::get_all_updates();
         let (image_available, image_json) = rakuos_updates::check_image_script();
+        let reboot_required = image_json["reboot_required"].as_bool().unwrap_or(false);
         let system = UpdateInfo {
-            available:       image_available,
-            current_version: image_json["booted"].as_str().unwrap_or("").to_string(),
-            new_version:     image_json["available"].as_str().unwrap_or("").to_string(),
-            new_tag:         image_json["available"].as_str().unwrap_or("").to_string(),
-            repo_url:        image_json["repo"].as_str().unwrap_or("").to_string(),
+            available:        image_available,
+            reboot_required,
+            current_version:  image_json["booted"].as_str().unwrap_or("").to_string(),
+            new_version:      image_json["available"].as_str().unwrap_or("").to_string(),
+            new_tag:          image_json["available"].as_str().unwrap_or("").to_string(),
+            repo_url:         image_json["repo"].as_str().unwrap_or("").to_string(),
             ..Default::default()
         };
 
@@ -308,6 +317,7 @@ fn load_updates(
             "flatpak":         serde_json::to_value(&flatpaks).unwrap_or_default(),
             "appimages":       [],
             "image_available": system.available,
+            "reboot_required": reboot_required,
             "image_info":      image_json,
         });
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -332,12 +342,19 @@ fn load_updates(
                 let apps:     Vec<FlatpakUpdate> = flatpaks.iter().filter(|f| !f.runtime).cloned().collect();
                 let runtimes: Vec<FlatpakUpdate> = flatpaks.iter().filter(|f|  f.runtime).cloned().collect();
 
-                let has_image    = system.available;
-                let has_pkgs     = !packages.is_empty();
-                let has_apps     = !apps.is_empty();
-                let has_runtimes = !runtimes.is_empty();
+                let has_image      = system.available;
+                let reboot_pending = system.reboot_required;
+                let has_pkgs       = !packages.is_empty();
+                let has_apps       = !apps.is_empty();
+                let has_runtimes   = !runtimes.is_empty();
 
-                if !has_image && !has_pkgs && !has_apps && !has_runtimes {
+                // If a staged image is waiting for reboot, show reboot button immediately.
+                if reboot_pending {
+                    status_lbl.set_label("System update staged — reboot to apply");
+                    reboot_btn.set_visible(true);
+                }
+
+                if !has_image && !reboot_pending && !has_pkgs && !has_apps && !has_runtimes {
                     status_lbl.set_label("Your system is up to date");
                     let sp = libadwaita::StatusPage::builder()
                         .title("Up to Date")
