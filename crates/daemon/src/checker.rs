@@ -78,13 +78,18 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
         },
         async {
             if check_fp {
-                log::info!("Running: {} check-flatpak", RAKUOS_UPDATE);
-                let res = run_rakuos_update("check-flatpak").await;
-                match &res {
-                    Ok((_, fps)) => log::info!("Flatpak check done: {} update(s)", fps.len()),
-                    Err(e)       => log::warn!("Flatpak check failed: {}", e),
-                }
-                res.ok()
+                log::info!("Checking flatpak updates via Rust backend (icon-enriched)");
+                let updates: Vec<serde_json::Value> =
+                    tokio::task::spawn_blocking(|| {
+                        rakuos_flatpak::get_all_updates()
+                            .into_iter()
+                            .filter_map(|f| serde_json::to_value(f).ok())
+                            .collect()
+                    })
+                    .await
+                    .unwrap_or_default();
+                log::info!("Flatpak check done: {} update(s)", updates.len());
+                Some((true, updates))
             } else {
                 log::info!("Flatpak check skipped (disabled in settings)");
                 None
@@ -145,7 +150,17 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
             async {
                 if !result.flatpak.is_empty() {
                     let _ = run_command(&["flatpak", "update", "-y", "--noninteractive"]).await;
-                    run_rakuos_update("check-flatpak").await.ok().map(|(_, v)| v)
+                    let updates: Vec<serde_json::Value> =
+                        tokio::task::spawn_blocking(|| {
+                            rakuos_flatpak::get_all_updates()
+                                .into_iter()
+                                .filter_map(|f| serde_json::to_value(f).ok())
+                                .collect()
+                        })
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    Some(updates)
                 } else {
                     None
                 }
