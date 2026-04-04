@@ -171,10 +171,17 @@ pub struct FlatpakUpdate {
     /// The remote to install from when needs_install is true.
     #[serde(default)]
     pub install_remote:  String,
+    /// Resolved local icon path (e.g. from flatpak appstream cache or per-app deploy dir).
+    #[serde(default)]
+    pub icon_path:       String,
+    /// Remote icon URL fallback when no local icon is found.
+    #[serde(default)]
+    pub icon_url:        String,
 }
 
 /// Return all available Flatpak updates (apps + runtimes) by calling
 /// `rakuos-update check-flatpak` which queries both separately.
+/// Each entry is enriched with icon_path/icon_url from the AppStream cache.
 pub fn get_all_updates() -> Vec<FlatpakUpdate> {
     let out = Command::new("/usr/libexec/rakuos/rakuos-update")
         .arg("check-flatpak")
@@ -182,6 +189,8 @@ pub fn get_all_updates() -> Vec<FlatpakUpdate> {
     let Ok(out) = out else { return Vec::new() };
 
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let appstream = rakuos_appstream::get_appstream();
+
     json["updates"]
         .as_array()
         .map(|arr| {
@@ -189,6 +198,10 @@ pub fn get_all_updates() -> Vec<FlatpakUpdate> {
                 .filter_map(|v| {
                     let app_id = v["app_id"].as_str()?.to_string();
                     if app_id.is_empty() { return None; }
+                    // Look up icon from AppStream cache (same resolution used by installed page)
+                    let (icon_path, icon_url) = appstream.get(&app_id)
+                        .map(|a| (a.icon_path.clone(), a.icon_url.clone()))
+                        .unwrap_or_default();
                     Some(FlatpakUpdate {
                         name:            v["name"].as_str().unwrap_or("").to_string(),
                         app_id,
@@ -197,6 +210,8 @@ pub fn get_all_updates() -> Vec<FlatpakUpdate> {
                         runtime:         v["runtime"].as_bool().unwrap_or(false),
                         needs_install:   v["needs_install"].as_bool().unwrap_or(false),
                         install_remote:  v["remote"].as_str().unwrap_or("").to_string(),
+                        icon_path,
+                        icon_url,
                     })
                 })
                 .collect()

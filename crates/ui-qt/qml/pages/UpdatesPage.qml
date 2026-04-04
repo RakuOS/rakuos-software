@@ -654,16 +654,7 @@ Item {
                                 spacing: 10
 
                                 AppIcon {
-                                    iconPath: {
-                                        if (modelData.icon_path) return modelData.icon_path;
-                                        var id = modelData.app_id || "";
-                                        if (id && modelData.pkg_type === "flatpak")
-                                            return "/var/lib/flatpak/appstream/flathub/x86_64/active/icons/128x128/" + id + ".png";
-                                        var name = (modelData.name || "").toLowerCase();
-                                        if (name && modelData.pkg_type === "rpm")
-                                            return "/usr/share/icons/hicolor/48x48/apps/" + name + ".png";
-                                        return "";
-                                    }
+                                    iconPath: modelData.icon_path || ""
                                     iconUrl: modelData.icon_url || ""
                                     iconName: modelData.name || modelData.app_id || modelData.id || "?"
                                     size: 32

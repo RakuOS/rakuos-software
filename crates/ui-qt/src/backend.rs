@@ -456,10 +456,31 @@ pub struct SoftwareBackend {
                 .output()
                 .ok();
 
-            let pkg_updates: Vec<serde_json::Value> = pkg_out
-                .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-                .and_then(|v| v["updates"].as_array().cloned())
-                .unwrap_or_default();
+            let pkg_updates: Vec<serde_json::Value> = {
+                let raw: Vec<serde_json::Value> = pkg_out
+                    .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                    .and_then(|v| v["updates"].as_array().cloned())
+                    .unwrap_or_default();
+                // Enrich with icon paths using the AppStream cache (same source as installed page)
+                let appstream = rakuos_appstream::get_appstream();
+                let pkg_icons: std::collections::HashMap<String, (String, String)> = appstream
+                    .values()
+                    .filter(|a| !a.package_name.is_empty())
+                    .fold(std::collections::HashMap::new(), |mut m, a| {
+                        m.entry(a.package_name.clone())
+                            .or_insert_with(|| (a.icon_path.clone(), a.icon_url.clone()));
+                        m
+                    });
+                raw.into_iter().map(|mut v| {
+                    if let Some(name) = v["name"].as_str().map(|s| s.to_string()) {
+                        if let Some((ip, iu)) = pkg_icons.get(&name) {
+                            if !ip.is_empty() { v["icon_path"] = ip.clone().into(); }
+                            if !iu.is_empty() { v["icon_url"]  = iu.clone().into(); }
+                        }
+                    }
+                    v
+                }).collect()
+            };
 
             let fp_updates: Vec<serde_json::Value> = fp_out
                 .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())

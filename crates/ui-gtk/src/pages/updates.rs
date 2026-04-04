@@ -40,6 +40,7 @@ fn parse_dnf_progress(line: &str) -> Option<f64> {
 
 use rakuos_flatpak::FlatpakUpdate;
 use rakuos_updates::UpdateInfo;
+use rakuos_appstream;
 
 // ── Shared operation state ────────────────────────────────────────────────────
 
@@ -267,7 +268,27 @@ fn load_updates(
 
     std::thread::spawn(move || {
         // Run all three checks: packages, flatpak, image
-        let packages = rakuos_updates::check_packages_script();
+        let raw_packages = rakuos_updates::check_packages_script();
+        // Enrich package entries with icon paths from AppStream (same source as installed page)
+        let appstream = rakuos_appstream::get_appstream();
+        let pkg_icons: std::collections::HashMap<String, (String, String)> = appstream
+            .values()
+            .filter(|a| !a.package_name.is_empty())
+            .fold(std::collections::HashMap::new(), |mut m, a| {
+                m.entry(a.package_name.clone())
+                    .or_insert_with(|| (a.icon_path.clone(), a.icon_url.clone()));
+                m
+            });
+        let packages: Vec<serde_json::Value> = raw_packages.into_iter().map(|mut v| {
+            if let Some(name) = v["name"].as_str().map(|s| s.to_string()) {
+                if let Some((ip, iu)) = pkg_icons.get(&name) {
+                    if !ip.is_empty() { v["icon_path"] = ip.clone().into(); }
+                    if !iu.is_empty() { v["icon_url"]  = iu.clone().into(); }
+                }
+            }
+            v
+        }).collect();
+        drop(appstream);
         let flatpaks = rakuos_flatpak::get_all_updates();
         let (image_available, image_json) = rakuos_updates::check_image_script();
         let system = UpdateInfo {
@@ -677,15 +698,16 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
         let cur  = pkg["current_version"].as_str().unwrap_or("").to_string();
         let new  = pkg["version"].as_str().unwrap_or("").to_string();
 
+        let icon_path = pkg["icon_path"].as_str().unwrap_or("").to_string();
+        let icon_url  = pkg["icon_url"].as_str().unwrap_or("").to_string();
+
         let row = GBox::builder()
             .orientation(Orientation::Horizontal)
             .spacing(12)
             .margin_top(8).margin_bottom(8)
             .margin_start(12).margin_end(12)
             .build();
-        row.append(&gtk4::Image::builder()
-            .icon_name("package-x-generic-symbolic")
-            .pixel_size(28).build());
+        row.append(&super::icon_helper::load_app_icon(&icon_path, &icon_url, 28, &name));
 
         let info = GBox::builder()
             .orientation(Orientation::Vertical)
@@ -901,12 +923,8 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
         .spacing(10)
         .build();
 
-    // Icon — look up by app_id in flatpak icon dirs
-    let icon_path = format!(
-        "/var/lib/flatpak/appstream/flathub/x86_64/active/icons/128x128/{}.png",
-        fp.app_id
-    );
-    let icon = super::icon_helper::load_app_icon(&icon_path, "", 36, &fp.name);
+    // Icon — use the resolved path from AppStream (same source as installed page)
+    let icon = super::icon_helper::load_app_icon(&fp.icon_path, &fp.icon_url, 36, &fp.name);
     item.append(&icon);
 
     let info = GBox::builder()

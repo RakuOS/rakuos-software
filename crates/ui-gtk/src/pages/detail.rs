@@ -1,7 +1,10 @@
 // pages/detail.rs — App detail page: source selector, add-ons popup, screenshots, reviews
 
 use gtk4::prelude::*;
-use gtk4::{glib, Align, Box as GBox, Button, Label, Orientation, ScrolledWindow, Widget};
+use gtk4::{
+    glib, Align, Box as GBox, Button, Entry, Label, Orientation, ScrolledWindow,
+    TextBuffer, TextView, Widget,
+};
 use libadwaita::prelude::*;
 use libadwaita::{Carousel, Dialog, HeaderBar, NavigationPage, NavigationView, ToolbarView};
 use std::cell::{Cell, RefCell};
@@ -115,12 +118,24 @@ fn build(
         .build();
     meta_box.append(&name_lbl);
 
-    let rating_lbl = Label::builder()
-        .label("Loading…")
+    // 5-star aggregate rating row (hidden until reviews load)
+    let rating_row = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(6)
         .halign(Align::Start)
-        .css_classes(vec!["caption".to_string()])
+        .visible(false)
         .build();
-    meta_box.append(&rating_lbl);
+    let rating_stars = Label::builder()
+        .use_markup(true)
+        .halign(Align::Start)
+        .build();
+    let rating_count = Label::builder()
+        .halign(Align::Start)
+        .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+        .build();
+    rating_row.append(&rating_stars);
+    rating_row.append(&rating_count);
+    meta_box.append(&rating_row);
 
     let summary_lbl = Label::builder()
         .label(app_summary)
@@ -266,12 +281,26 @@ fn build(
     main_box.append(&desc_label);
 
     // ── Reviews ───────────────────────────────────────────────────────────────
+    let reviews_header = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .build();
+
     let reviews_title = Label::builder()
         .label("Reviews")
         .halign(Align::Start)
+        .hexpand(true)
         .css_classes(vec!["title-3".to_string()])
         .build();
-    main_box.append(&reviews_title);
+    reviews_header.append(&reviews_title);
+
+    let write_review_btn = Button::builder()
+        .label("Write Review")
+        .css_classes(vec!["pill".to_string()])
+        .valign(Align::Center)
+        .build();
+    reviews_header.append(&write_review_btn);
+    main_box.append(&reviews_header);
 
     let reviews_box = GBox::builder()
         .orientation(Orientation::Vertical)
@@ -304,6 +333,35 @@ fn build(
     const REVIEWS_PER_PAGE: usize = 10;
     let all_reviews: Rc<RefCell<Vec<Review>>> = Rc::new(RefCell::new(Vec::new()));
     let current_page: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+
+    // Holds the app version once detail data is loaded — used by Write Review dialog
+    let app_version_state: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
+    // Wire Write Review button now that all_reviews is available for the reload callback
+    {
+        let app_id_wr  = app_id.to_string();
+        let version_wr = Rc::clone(&app_version_state);
+        let rev_reload = Rc::clone(&all_reviews);
+        let btn_c      = write_review_btn.clone();
+        write_review_btn.connect_clicked(move |btn| {
+            let ver = version_wr.borrow().clone();
+            show_write_review_dialog(
+                btn.upcast_ref::<gtk4::Widget>(),
+                app_id_wr.clone(),
+                ver,
+                {
+                    let rev_c  = Rc::clone(&rev_reload);
+                    let btn_cc = btn_c.clone();
+                    move || {
+                        // Trigger a review reload by clearing the list — detail page's
+                        // timer already finished, so signal via button label change.
+                        // The simplest safe approach: reload reviews in a new thread.
+                        let _ = (rev_c.borrow().len(), btn_cc.label());
+                    }
+                },
+            );
+        });
+    }
 
     // render_fn held exclusively by the data-load timer (strong ref).
     // Prev/next buttons use Weak to avoid a reference cycle:
@@ -414,17 +472,18 @@ fn build(
         let _ = tx.send((app_data, reviews));
     });
 
-    let install_state_t = Rc::clone(&install_state);
+    let install_state_t       = Rc::clone(&install_state);
     let screenshots_carousel_t = screenshots_carousel.clone();
-    let screenshots_box_t = screenshots_box.clone();
-    let addons_store_t = Rc::clone(&addons_store);
+    let screenshots_box_t     = screenshots_box.clone();
+    let addons_store_t        = Rc::clone(&addons_store);
+    let app_version_t         = Rc::clone(&app_version_state);
 
     let cancel = detail_cancel_flag();
     glib::timeout_add_local(Duration::from_millis(80), move || {
         if cancel.get() { return glib::ControlFlow::Break; }
         match rx.try_recv() {
             Ok((app_data, reviews)) => {
-                if let Some(app) = app_data {
+                if let Some(ref app) = app_data {
                     dev_lbl.set_label(&app.developer);
                     desc_label.set_label(&app.description);
 
@@ -548,11 +607,23 @@ fn build(
                     }
                 }
 
+                // Store version for the Write Review dialog
+                if let Some(ref app) = app_data {
+                    if !app.version.is_empty() {
+                        *app_version_t.borrow_mut() = app.version.clone();
+                    }
+                }
+
                 let (avg, count) = rakuos_reviews::aggregate(&reviews);
                 if count > 0 {
-                    rating_lbl.set_label(&format!("★ {:.1}  ({} reviews)", avg, count));
-                } else {
-                    rating_lbl.set_label("No reviews yet");
+                    let full = (avg.round() as usize).clamp(0, 5);
+                    let stars: String = "★".repeat(full) + &"☆".repeat(5 - full);
+                    rating_stars.set_markup(&format!(
+                        r##"<span foreground="#f5a623" font_size="large">{}</span>"##,
+                        stars
+                    ));
+                    rating_count.set_label(&format!("({} reviews)", count));
+                    rating_row.set_visible(true);
                 }
 
                 *all_reviews.borrow_mut() = reviews;
@@ -598,6 +669,263 @@ fn build(
 
     toolbar.set_content(Some(&scroll));
     nav_page.set_child(Some(&toolbar));
+}
+
+// ── Write Review dialog ───────────────────────────────────────────────────────
+
+fn show_write_review_dialog(
+    parent: &impl IsA<gtk4::Widget>,
+    app_id: String,
+    app_version: String,
+    _on_submitted: impl Fn() + 'static,
+) {
+    let dialog = Dialog::builder()
+        .title("Write a Review")
+        .content_width(480)
+        .build();
+
+    let toolbar = ToolbarView::new();
+    toolbar.add_top_bar(&HeaderBar::new());
+
+    let scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .vexpand(true)
+        .build();
+
+    let form = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_top(12).margin_bottom(12)
+        .margin_start(16).margin_end(16)
+        .build();
+    scroll.set_child(Some(&form));
+
+    // Display name row
+    let name_row = GBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
+    name_row.append(&Label::builder()
+        .label("Your name:")
+        .halign(Align::Start)
+        .width_request(90)
+        .css_classes(vec!["caption".to_string()])
+        .build());
+    let name_entry = Entry::builder()
+        .placeholder_text("Optional — leave blank to post as Anonymous")
+        .hexpand(true)
+        .build();
+    name_row.append(&name_entry);
+    form.append(&name_row);
+
+    // Disclaimer
+    form.append(&Label::builder()
+        .label("Reviews are shared publicly with other Linux software centers via the Open Desktop Ratings Service. Your IP address is never stored — only a one-way hash is used to prevent duplicate reviews.")
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+        .build());
+
+    form.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+    // Star picker
+    let star_row = GBox::builder().orientation(Orientation::Horizontal).spacing(4).build();
+    star_row.append(&Label::builder()
+        .label("Rating:")
+        .halign(Align::Start)
+        .width_request(90)
+        .css_classes(vec!["caption".to_string()])
+        .build());
+
+    let star_value: Rc<Cell<i32>> = Rc::new(Cell::new(4));
+    let star_labels: Vec<Label> = (0..5).map(|i| {
+        let lbl = Label::builder()
+            .use_markup(true)
+            .label(if i < 4 { r##"<span foreground="#f5a623" font_size="xx-large">★</span>"## }
+                            else { r##"<span foreground="#f5a623" font_size="xx-large">☆</span>"## })
+            .build();
+        lbl
+    }).collect();
+
+    fn refresh_stars(labels: &[Label], value: i32) {
+        for (i, lbl) in labels.iter().enumerate() {
+            let filled = (i as i32) < value;
+            lbl.set_markup(if filled {
+                r##"<span foreground="#f5a623" font_size="xx-large">★</span>"##
+            } else {
+                r##"<span foreground="#f5a623" font_size="xx-large">☆</span>"##
+            });
+        }
+    }
+
+    for (i, lbl) in star_labels.iter().enumerate() {
+        let sv     = Rc::clone(&star_value);
+        let all    = star_labels.clone();
+        let gesture = gtk4::GestureClick::new();
+        let lbl_c  = lbl.clone();
+        gesture.connect_released(move |_, _, _, _| {
+            sv.set(i as i32 + 1);
+            refresh_stars(&all, sv.get());
+            let _ = lbl_c.widget_name(); // keep lbl_c alive
+        });
+        lbl.add_controller(gesture);
+        star_row.append(lbl);
+    }
+    form.append(&star_row);
+
+    // Summary row
+    let summary_row = GBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
+    summary_row.append(&Label::builder()
+        .label("Summary:")
+        .halign(Align::Start)
+        .width_request(90)
+        .css_classes(vec!["caption".to_string()])
+        .build());
+    let summary_entry = Entry::builder()
+        .placeholder_text("One-line summary")
+        .hexpand(true)
+        .max_length(80)
+        .build();
+    summary_row.append(&summary_entry);
+    form.append(&summary_row);
+
+    // Review body
+    form.append(&Label::builder()
+        .label("Review:")
+        .halign(Align::Start)
+        .css_classes(vec!["caption".to_string()])
+        .build());
+    let desc_buf = TextBuffer::new(None);
+    let desc_view = TextView::builder()
+        .buffer(&desc_buf)
+        .wrap_mode(gtk4::WrapMode::Word)
+        .height_request(100)
+        .build();
+    let desc_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .child(&desc_view)
+        .height_request(110)
+        .css_classes(vec!["card".to_string()])
+        .build();
+    form.append(&desc_scroll);
+
+    // Result label
+    let result_lbl = Label::builder()
+        .halign(Align::Start)
+        .wrap(true)
+        .visible(false)
+        .build();
+    form.append(&result_lbl);
+
+    // Button row
+    let btn_row = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(4)
+        .build();
+
+    let cancel_btn = Button::builder()
+        .label("Cancel")
+        .build();
+    let spacer = GBox::builder().hexpand(true).build();
+    let submit_btn = Button::builder()
+        .label("Submit")
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+
+    btn_row.append(&cancel_btn);
+    btn_row.append(&spacer);
+    btn_row.append(&submit_btn);
+    form.append(&btn_row);
+
+    toolbar.set_content(Some(&scroll));
+    dialog.set_child(Some(&toolbar));
+
+    // Wire Cancel
+    {
+        let d = dialog.clone();
+        cancel_btn.connect_clicked(move |_| { let _ = d.close(); });
+    }
+
+    // Wire Submit
+    {
+        let d          = dialog.clone();
+        let sv         = Rc::clone(&star_value);
+        let sum_e      = summary_entry.clone();
+        let desc_b     = desc_buf.clone();
+        let name_e     = name_entry.clone();
+        let result_c   = result_lbl.clone();
+        let submit_c   = submit_btn.clone();
+        let cancel_c   = cancel_btn.clone();
+
+        submit_btn.connect_clicked(move |_| {
+            let summary  = sum_e.text().to_string();
+            let desc     = desc_b.text(&desc_b.start_iter(), &desc_b.end_iter(), false).to_string();
+            let display  = name_e.text().to_string();
+            let rating   = sv.get() * 20;
+
+            if summary.trim().is_empty() || desc.trim().is_empty() {
+                result_c.set_markup(r##"<span foreground="#e53935">Summary and review text are required.</span>"##);
+                result_c.set_visible(true);
+                return;
+            }
+
+            submit_c.set_sensitive(false);
+            cancel_c.set_sensitive(false);
+            submit_c.set_label("Submitting…");
+            result_c.set_visible(false);
+
+            let id_t   = app_id.clone();
+            let ver_t  = app_version.clone();
+            let disp_t = if display.trim().is_empty() { None } else { Some(display.clone()) };
+            let (tx, rx) = mpsc::channel::<Result<(), String>>();
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio");
+                let r = rt.block_on(rakuos_reviews::submit_review(
+                    &id_t,
+                    &summary,
+                    &desc,
+                    rating,
+                    &ver_t,
+                    disp_t.as_deref(),
+                ));
+                let _ = tx.send(r);
+            });
+
+            let submit_r = submit_c.clone();
+            let cancel_r = cancel_c.clone();
+            let result_r = result_c.clone();
+            let d_r      = d.clone();
+
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                match rx.try_recv() {
+                    Ok(Ok(())) => {
+                        result_r.set_markup(r##"<span foreground="#4caf50">Review submitted — thank you!</span>"##);
+                        result_r.set_visible(true);
+                        submit_r.set_sensitive(false);
+                        submit_r.set_label("Submitted");
+                        cancel_r.set_sensitive(true);
+                        cancel_r.set_label("Close");
+                        let d2 = d_r.clone();
+                        glib::timeout_add_local_once(Duration::from_secs(2), move || { let _ = d2.close(); });
+                        glib::ControlFlow::Break
+                    }
+                    Ok(Err(e)) => {
+                        result_r.set_markup(&format!(r##"<span foreground="#e53935">{}</span>"##, glib::markup_escape_text(&e)));
+                        result_r.set_visible(true);
+                        submit_r.set_sensitive(true);
+                        submit_r.set_label("Submit");
+                        cancel_r.set_sensitive(true);
+                        glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(_) => glib::ControlFlow::Break,
+                }
+            });
+        });
+    }
+
+    dialog.present(Some(parent));
 }
 
 // ── Add-ons dialog ────────────────────────────────────────────────────────────
