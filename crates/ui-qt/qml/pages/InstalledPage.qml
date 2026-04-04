@@ -140,7 +140,7 @@ Item {
                         topPadding: 4
                         bottomPadding: 8
 
-                        // Applications section
+                        // Applications section header
                         Label {
                             visible: installedPage.flatpakApps.length > 0
                             text: "Applications"
@@ -164,37 +164,112 @@ Item {
                                 property bool removing: false
                                 property bool removed: false
                                 visible: !removed
+
                                 MouseArea {
-                                    id: fpRowClick; anchors.fill: parent; z: -1
-                                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    id: fpRowClick
+                                    anchors.fill: parent
+                                    z: -1
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: root.showDetail(modelData)
                                 }
+
                                 RowLayout {
-                                    anchors { fill: parent; leftMargin: 16; rightMargin: 24 }
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 16
+                                    anchors.rightMargin: 24
                                     spacing: 12
-                                    AppIcon { iconPath: modelData.icon_path || ""; iconUrl: modelData.icon_url || ""; iconName: modelData.name || modelData.id || "?"; size: 32 }
+
+                                    AppIcon {
+                                        iconPath: modelData.icon_path || ""
+                                        iconUrl: modelData.icon_url || ""
+                                        iconName: modelData.name || modelData.id || "?"
+                                        size: 32
+                                    }
+
                                     Column {
-                                        Layout.fillWidth: true; spacing: 2
-                                        Label { text: modelData.name || modelData.id || ""; font.bold: true; elide: Text.ElideRight; width: parent.width }
-                                        Label { text: (modelData.summary || "").substring(0,80); font.pixelSize: 11; color: root.dimText; visible: text !== ""; elide: Text.ElideRight; width: parent.width }
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        Label {
+                                            text: modelData.name || modelData.id || ""
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                            width: parent.width
+                                        }
+                                        Label {
+                                            text: (modelData.summary || "").substring(0, 80)
+                                            font.pixelSize: 11
+                                            color: root.dimText
+                                            visible: text !== ""
+                                            elide: Text.ElideRight
+                                            width: parent.width
+                                        }
                                     }
-                                    Label { text: modelData.version || ""; font.pixelSize: 11; color: root.dimText; visible: text !== "" }
+
+                                    Label {
+                                        text: modelData.version || ""
+                                        font.pixelSize: 11
+                                        color: root.dimText
+                                        visible: text !== ""
+                                    }
+
                                     Button {
-                                        visible: !fpAppRow.removing; flat: true; implicitWidth: 80; implicitHeight: 32
-                                        contentItem: Label { text: "Uninstall"; color: "#e53935"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                        onClicked: { fpAppRow.removing = true; backend.removeApp(modelData.id || "", "flatpak"); fpRemoveTimer.start() }
+                                        visible: !fpAppRow.removing
+                                        flat: true
+                                        implicitWidth: 80
+                                        implicitHeight: 32
+                                        contentItem: Label {
+                                            text: "Uninstall"
+                                            color: "#e53935"
+                                            font.pixelSize: 12
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                        onClicked: {
+                                            fpAppRow.removing = true
+                                            backend.removeApp(modelData.id || "", "flatpak")
+                                            fpRemoveTimer.start()
+                                        }
                                     }
-                                    BusyIndicator { running: fpAppRow.removing; visible: fpAppRow.removing; implicitWidth: 20; implicitHeight: 20 }
+
+                                    BusyIndicator {
+                                        running: fpAppRow.removing
+                                        visible: fpAppRow.removing
+                                        implicitWidth: 20
+                                        implicitHeight: 20
+                                    }
                                 }
-                                Rectangle { anchors { bottom: parent.bottom; left: parent.left; right: parent.right; leftMargin: 16; rightMargin: 16 }; height: 1; color: palette.mid; opacity: 0.15 }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.leftMargin: 16
+                                    anchors.rightMargin: 16
+                                    height: 1
+                                    color: palette.mid
+                                    opacity: 0.15
+                                }
+
                                 Timer {
-                                    id: fpRemoveTimer; interval: 400; repeat: true
-                                    onTriggered: { backend.pollOp(); if (!backend.opRunning) { stop(); fpAppRow.removing = false; if (backend.opResult === 1) { fpAppRow.removed = true; } } }
+                                    id: fpRemoveTimer
+                                    interval: 400
+                                    repeat: true
+                                    onTriggered: {
+                                        backend.pollOp()
+                                        if (!backend.opRunning) {
+                                            stop()
+                                            fpAppRow.removing = false
+                                            if (backend.opResult === 1) {
+                                                fpAppRow.removed = true
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
 
-                        // Runtimes / Add-ons section
+                        // Runtimes / Add-ons section header
                         Label {
                             visible: installedPage.flatpakRuntimes.length > 0
                             text: "Runtimes / Add-ons"
@@ -209,19 +284,54 @@ Item {
                         Repeater {
                             model: installedPage.flatpakRuntimes
                             delegate: Rectangle {
-                                width: parent.width; height: 52
+                                width: parent.width
+                                height: 52
                                 color: "transparent"
+
                                 RowLayout {
-                                    anchors { fill: parent; leftMargin: 16; rightMargin: 24 }
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 16
+                                    anchors.rightMargin: 24
                                     spacing: 12
-                                    Image { source: "image://theme/application-x-addon"; width: 32; height: 32; fillMode: Image.PreserveAspectFit }
+
+                                    Image {
+                                        source: "image://theme/application-x-addon"
+                                        width: 32
+                                        height: 32
+                                        fillMode: Image.PreserveAspectFit
+                                    }
+
                                     Column {
-                                        Layout.fillWidth: true; spacing: 2
-                                        Label { text: modelData.name || modelData.app_id || ""; font.bold: true; elide: Text.ElideRight; width: parent.width }
-                                        Label { text: (modelData.app_id || "") + (modelData.version ? " · " + modelData.version : "") + (modelData.origin ? " · " + modelData.origin : ""); font.pixelSize: 11; color: root.dimText; elide: Text.ElideRight; width: parent.width }
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        Label {
+                                            text: modelData.name || modelData.app_id || ""
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                            width: parent.width
+                                        }
+                                        Label {
+                                            text: (modelData.app_id || "")
+                                                  + (modelData.version ? " · " + modelData.version : "")
+                                                  + (modelData.origin ? " · " + modelData.origin : "")
+                                            font.pixelSize: 11
+                                            color: root.dimText
+                                            elide: Text.ElideRight
+                                            width: parent.width
+                                        }
                                     }
                                 }
-                                Rectangle { anchors { bottom: parent.bottom; left: parent.left; right: parent.right; leftMargin: 16; rightMargin: 16 }; height: 1; color: palette.mid; opacity: 0.15 }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.leftMargin: 16
+                                    anchors.rightMargin: 16
+                                    height: 1
+                                    color: palette.mid
+                                    opacity: 0.15
+                                }
                             }
                         }
                     }

@@ -6,7 +6,11 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 const RAKUOS_UPDATE: &str = "/usr/libexec/rakuos/rakuos-update";
-const CMD_TIMEOUT: Duration = Duration::from_secs(30);
+// Package check runs `dnf check-update --refresh` which can be slow on first run
+// or on a slow mirror — allow up to 3 minutes.
+const PKG_TIMEOUT: Duration = Duration::from_secs(180);
+// Flatpak and image checks are faster; 60s is plenty.
+const CMD_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateResult {
@@ -61,7 +65,7 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
         async {
             if check_pkgs {
                 log::info!("Running: {} check", RAKUOS_UPDATE);
-                let res = run_rakuos_update("check").await;
+                let res = run_rakuos_update_with_timeout("check", PKG_TIMEOUT).await;
                 match &res {
                     Ok((_, pkgs)) => log::info!("Package check done: {} update(s)", pkgs.len()),
                     Err(e)        => log::warn!("Package check failed: {}", e),
@@ -161,8 +165,15 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
 async fn run_rakuos_update(
     command: &str,
 ) -> anyhow::Result<(bool, Vec<serde_json::Value>)> {
+    run_rakuos_update_with_timeout(command, CMD_TIMEOUT).await
+}
+
+async fn run_rakuos_update_with_timeout(
+    command: &str,
+    t: Duration,
+) -> anyhow::Result<(bool, Vec<serde_json::Value>)> {
     let out = timeout(
-        CMD_TIMEOUT,
+        t,
         tokio::process::Command::new(RAKUOS_UPDATE)
             .arg(command)
             .output(),
