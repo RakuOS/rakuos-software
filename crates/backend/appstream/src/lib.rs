@@ -510,8 +510,17 @@ fn parse_catalog_file(path: &Path, apps: &mut HashMap<String, AppInfo>) -> Resul
                         in_keyword = lang_ok;
                     }
                     b"image" if current.is_some() => {
-                        // Only capture screenshot images, not icon images
-                        in_screenshot_image = true;
+                        // Only capture "source" (full-res) images — skip thumbnails.
+                        // AppStream ships one type="source" + multiple type="thumbnail"
+                        // entries per screenshot; thumbnails are lower-res dupes.
+                        let img_type = e.attributes()
+                            .filter_map(|a| a.ok())
+                            .find(|a| a.key.as_ref() == b"type")
+                            .map(|a| String::from_utf8_lossy(&a.value).to_lowercase());
+                        in_screenshot_image = matches!(
+                            img_type.as_deref(),
+                            None | Some("source")
+                        );
                     }
                     b"url" if current.is_some() => {
                         in_url_homepage = e.attributes().any(|a| {
