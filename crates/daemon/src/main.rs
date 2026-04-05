@@ -163,6 +163,9 @@ async fn main() -> anyhow::Result<()> {
                                         let count = v["total"].as_i64().unwrap_or(0) as usize;
                                         tray_c.update(|t| t.update_count = count);
                                         log::info!("Badge synced from UI cache: {} update(s)", count);
+                                        if let Some(body) = notification_body_from_cache(&v) {
+                                            send_notification("Updates Available", &body).await;
+                                        }
                                     }
                                 }
                                 break;
@@ -205,6 +208,33 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Build a human-readable notification body from the daemon cache JSON.
+/// Returns None if there's nothing to notify about (total == 0).
+fn notification_body_from_cache(cache: &serde_json::Value) -> Option<String> {
+    let mut parts = Vec::new();
+
+    let pkgs = cache["packages"].as_array().map(|a| a.len()).unwrap_or(0);
+    let fps  = cache["flatpak"].as_array().map(|a| a.len()).unwrap_or(0);
+    let ais  = cache["appimages"].as_array().map(|a| a.len()).unwrap_or(0);
+    let img  = cache["image_available"].as_bool().unwrap_or(false);
+
+    if pkgs > 0 {
+        parts.push(format!("{} package update{}", pkgs, if pkgs != 1 { "s" } else { "" }));
+    }
+    if fps > 0 {
+        parts.push(format!("{} Flatpak update{}", fps, if fps != 1 { "s" } else { "" }));
+    }
+    if ais > 0 {
+        parts.push(format!("{} AppImage update{}", ais, if ais != 1 { "s" } else { "" }));
+    }
+    if img {
+        let ver = cache["image_info"]["available"].as_str().unwrap_or("new version");
+        parts.push(format!("System image {} available", ver));
+    }
+
+    if parts.is_empty() { None } else { Some(parts.join("\n")) }
 }
 
 async fn send_notification(summary: &str, body: &str) {
