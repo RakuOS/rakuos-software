@@ -168,14 +168,35 @@ Item {
         }
     }
 
-    // Total update count
+    // Total update count — subtracts rows already completed so "up to date"
+    // state appears automatically as the last row finishes.
     property int totalUpdates: {
         if (!updateData) return 0;
+        var cu = completedUpdates;
         var n = 0;
-        if (updateData.packages)  n += updateData.packages.length;
-        if (updateData.flatpak)   n += updateData.flatpak.length;
-        if (updateData.appimages) n += updateData.appimages.length;
-        if (updateData.image_available) n += 1;
+        if (updateData.packages) {
+            if (!cu["__packages__"]) {
+                updateData.packages.forEach(function(p) {
+                    var id = p.app_id || p.id || p.name || "";
+                    if (!cu[id]) n++;
+                });
+            }
+        }
+        if (updateData.flatpak) {
+            if (!cu["__flatpak__"]) {
+                updateData.flatpak.forEach(function(p) {
+                    var id = p.app_id || p.id || p.name || "";
+                    if (!cu[id]) n++;
+                });
+            }
+        }
+        if (updateData.appimages) {
+            updateData.appimages.forEach(function(p) {
+                var id = p.id || p.name || "";
+                if (!cu[id]) n++;
+            });
+        }
+        if (updateData.image_available && !imageUpdateDone) n += 1;
         return n;
     }
 
@@ -456,7 +477,7 @@ Item {
                                     width: parent.width
                                     height: 10
                                     from: 0; to: 100
-                                    indeterminate: backend.opProgress === 0
+                                    indeterminate: false
                                     value: backend.opProgress
                                 }
                             }
@@ -780,7 +801,7 @@ Item {
                                 height: 6
                                 visible: rowUpdating
                                 from: 0; to: 100
-                                indeterminate: backend.opProgress === 0
+                                indeterminate: false
                                 value: backend.opProgress
                             }
                         }

@@ -7,7 +7,7 @@ use gtk4::{
 };
 use libadwaita::prelude::*;
 use libadwaita::NavigationView;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -752,6 +752,9 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
         .css_classes(vec!["caption".to_string()])
         .build();
 
+    // Per-row remaining counter: when it hits 0, the whole card hides.
+    let remaining = Rc::new(Cell::new(packages.len()));
+
     // Rows
     for pkg in packages {
         let name = pkg["name"].as_str().unwrap_or("").to_string();
@@ -804,50 +807,76 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
         card.append(&pkg_row);
         card.append(&gtk4::Separator::new(Orientation::Horizontal));
 
-        // Wire per-row Update button
+        // Wire per-row Update button — ProgressMsg channel with real+fake progress
         let pkg_name  = name.clone();
         let state_p   = state.clone();
         let prog_p    = row_prog.clone();
         let btn_p     = upd_btn.clone();
         let row_p     = pkg_row.clone();
+        let rem_p     = remaining.clone();
+        let card_p    = card.clone();
 
         upd_btn.connect_clicked(move |btn| {
             if state_p.is_running() { return; }
             state_p.start(&pkg_name);
             btn.set_sensitive(false);
             btn.set_label("Updating…");
-            prog_p.set_fraction(0.0);
+            prog_p.set_fraction(0.02);  // start at 2% so bar is immediately visible
             prog_p.set_visible(true);
 
             let name_t = pkg_name.clone();
-            let (tx, rx) = mpsc::channel::<bool>();
+            let (tx, rx) = mpsc::channel::<ProgressMsg>();
             std::thread::spawn(move || {
-                let ok = rakuos_updates::upgrade_single_package_stream(&name_t)
-                    .any(|l| l.starts_with("__done__0"));
-                let _ = tx.send(ok);
+                for line in rakuos_updates::upgrade_single_package_stream(&name_t) {
+                    if let Some(code) = line.strip_prefix("__done__") {
+                        let _ = tx.send(ProgressMsg::Done(code.trim() == "0"));
+                        return;
+                    }
+                    if let Some(pct) = parse_dnf_progress(&line) {
+                        let _ = tx.send(ProgressMsg::Progress(pct));
+                    }
+                }
+                let _ = tx.send(ProgressMsg::Done(false));
             });
 
             let state_r = state_p.clone();
             let prog_r  = prog_p.clone();
             let btn_r   = btn_p.clone();
             let row_r   = row_p.clone();
+            let rem_r   = rem_p.clone();
+            let card_r  = card_p.clone();
 
             glib::timeout_add_local(Duration::from_millis(100), move || {
-                match rx.try_recv() {
-                    Ok(ok) => {
-                        state_r.stop();
-                        prog_r.set_visible(false);
-                        if ok {
-                            row_r.set_visible(false);
-                        } else {
-                            btn_r.set_sensitive(true);
-                            btn_r.set_label("Retry");
-                        }
-                        glib::ControlFlow::Break
+                let mut got_real = false;
+                let mut done_result: Option<bool> = None;
+                loop {
+                    match rx.try_recv() {
+                        Ok(ProgressMsg::Progress(pct)) => { prog_r.set_fraction(pct); got_real = true; }
+                        Ok(ProgressMsg::Done(ok))      => { done_result = Some(ok); break; }
+                        Err(_)                         => break,
                     }
-                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                    Err(_) => { state_r.stop(); glib::ControlFlow::Break }
                 }
+                if !got_real && done_result.is_none() {
+                    // Fake-advance toward 95% so something is always visibly moving
+                    let cur = prog_r.fraction();
+                    if cur < 0.95 { prog_r.set_fraction((cur + 0.01).min(0.95)); }
+                }
+                if let Some(ok) = done_result {
+                    prog_r.set_fraction(1.0);
+                    state_r.stop();
+                    prog_r.set_visible(false);
+                    if ok {
+                        row_r.set_visible(false);
+                        let rem = rem_r.get().saturating_sub(1);
+                        rem_r.set(rem);
+                        if rem == 0 { card_r.set_visible(false); }
+                    } else {
+                        btn_r.set_sensitive(true);
+                        btn_r.set_label("Retry");
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
             });
         });
     }
@@ -971,10 +1000,11 @@ fn build_flatpak_section(title: &str, flatpaks: &[FlatpakUpdate], state: UpdateS
     card.append(&header);
     card.append(&gtk4::Separator::new(Orientation::Horizontal));
 
-    // Items
+    // Items — remaining counter hides the card when all rows complete individually
+    let remaining = Rc::new(Cell::new(flatpaks.len()));
     let count = flatpaks.len();
     for (i, fp) in flatpaks.iter().enumerate() {
-        card.append(&build_flatpak_row(fp, state.clone()));
+        card.append(&build_flatpak_row(fp, state.clone(), remaining.clone(), card.clone()));
         if i + 1 < count {
             card.append(&gtk4::Separator::new(Orientation::Horizontal));
         }
@@ -1033,7 +1063,7 @@ fn build_flatpak_section(title: &str, flatpaks: &[FlatpakUpdate], state: UpdateS
     card.upcast()
 }
 
-fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
+fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState, remaining: Rc<Cell<usize>>, card: GBox) -> Widget {
     let row = GBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(4)
@@ -1111,30 +1141,31 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
         .build();
     row.append(&progress);
 
-    // Wire individual Update/Install button
-    let app_id       = fp.app_id.clone();
-    let fp_version   = fp.version.clone();
-    let fp_remote    = fp.install_remote.clone();
+    // Wire individual Update/Install button — ProgressMsg channel, real+fake 0-100% bar
+    let app_id        = fp.app_id.clone();
+    let fp_version    = fp.version.clone();
+    let fp_remote     = fp.install_remote.clone();
     let needs_install = fp.needs_install;
     let prog_c  = progress.clone();
     let btn_ref = update_btn.clone();
     let state_c = state.clone();
     let row_c   = row.clone();
+    let rem_c   = remaining.clone();
+    let card_c  = card.clone();
 
     update_btn.connect_clicked(move |btn| {
         if state_c.is_running() { return; }
         state_c.start(&app_id);
         btn.set_sensitive(false);
         btn.set_label(if needs_install { "Installing…" } else { "Updating…" });
-        prog_c.set_fraction(0.0);
+        prog_c.set_fraction(0.02);  // start at 2% — always a bar, never a spinner
         prog_c.set_visible(true);
 
         let id      = app_id.clone();
         let version = fp_version.clone();
         let remote  = fp_remote.clone();
-        let (tx, rx) = mpsc::channel::<bool>();
+        let (tx, rx) = mpsc::channel::<ProgressMsg>();
         std::thread::spawn(move || {
-            let mut ok = false;
             let iter: Box<dyn Iterator<Item = String>> = if needs_install {
                 Box::new(rakuos_flatpak::install_ref_stream(&remote, &id, &version))
             } else {
@@ -1142,41 +1173,63 @@ fn build_flatpak_row(fp: &FlatpakUpdate, state: UpdateState) -> Widget {
             };
             for line in iter {
                 if let Some(code) = line.strip_prefix("__done__") {
-                    ok = code.trim() == "0";
+                    let _ = tx.send(ProgressMsg::Done(code.trim() == "0"));
+                    return;
+                }
+                // "[N/M]" step progress or "> XX%" sub-step percentage
+                if let Some(pct) = parse_dnf_progress(&line) {
+                    let _ = tx.send(ProgressMsg::Progress(pct));
+                } else {
+                    let t = line.trim();
+                    if let Some(rest) = t.strip_prefix('>') {
+                        let pct_str = rest.trim().trim_end_matches('%');
+                        if let Ok(p) = pct_str.parse::<f64>() {
+                            let _ = tx.send(ProgressMsg::Progress(p / 100.0));
+                        }
+                    }
                 }
             }
-            let _ = tx.send(ok);
+            let _ = tx.send(ProgressMsg::Done(false));
         });
 
         let state_r = state_c.clone();
         let prog_r  = prog_c.clone();
         let btn_r   = btn_ref.clone();
         let row_r   = row_c.clone();
+        let rem_r   = rem_c.clone();
+        let card_r  = card_c.clone();
 
         glib::timeout_add_local(Duration::from_millis(100), move || {
-            prog_r.pulse();
-            match rx.try_recv() {
-                Ok(ok) => {
-                    state_r.stop();
-                    prog_r.set_visible(false);
-                    if ok {
-                        // Hide the entire row on success
-                        row_r.set_visible(false);
-                    } else {
-                        btn_r.set_label("Retry");
-                        btn_r.set_sensitive(true);
-                    }
-                    glib::ControlFlow::Break
-                }
-                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(_) => {
-                    state_r.stop();
-                    prog_r.set_visible(false);
-                    btn_r.set_label("Retry");
-                    btn_r.set_sensitive(true);
-                    glib::ControlFlow::Break
+            let mut got_real = false;
+            let mut done_result: Option<bool> = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(ProgressMsg::Progress(pct)) => { prog_r.set_fraction(pct); got_real = true; }
+                    Ok(ProgressMsg::Done(ok))      => { done_result = Some(ok); break; }
+                    Err(_)                         => break,
                 }
             }
+            if !got_real && done_result.is_none() {
+                // Fake-advance: bar always moves so users know something is happening
+                let cur = prog_r.fraction();
+                if cur < 0.95 { prog_r.set_fraction((cur + 0.01).min(0.95)); }
+            }
+            if let Some(ok) = done_result {
+                prog_r.set_fraction(1.0);
+                state_r.stop();
+                prog_r.set_visible(false);
+                if ok {
+                    row_r.set_visible(false);
+                    let rem = rem_r.get().saturating_sub(1);
+                    rem_r.set(rem);
+                    if rem == 0 { card_r.set_visible(false); }
+                } else {
+                    btn_r.set_label("Retry");
+                    btn_r.set_sensitive(true);
+                }
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
         });
     });
 

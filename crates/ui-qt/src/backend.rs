@@ -1113,10 +1113,10 @@ impl SoftwareBackend {
         let s = self.get_shared();
         s.running.store(true, Ordering::Relaxed);
         s.result.store(0, Ordering::Relaxed);
-        s.progress.store(0, Ordering::Relaxed);
+        s.progress.store(2, Ordering::Relaxed);  // start at 2 so bar is immediately visible
         self.opRunning  = true;
         self.opResult   = 0;
-        self.opProgress = 0;
+        self.opProgress = 2;
         self.opStateChanged();
         let _ = std::fs::write(log_path(), "");
         self.logRevision = 0;
