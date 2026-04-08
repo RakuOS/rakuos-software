@@ -175,6 +175,16 @@ pub fn upgrade_packages_stream() -> impl Iterator<Item = String> {
     run_stream_owned(vec!["sudo".into(), "/usr/libexec/rakuos/rakuos-update".into(), "upgrade".into()])
 }
 
+/// Stream output from upgrading a single overlay package by name.
+pub fn upgrade_single_package_stream(name: &str) -> impl Iterator<Item = String> {
+    run_stream_owned(vec![
+        "sudo".into(),
+        "/usr/libexec/rakuos/rakuos-update".into(),
+        "upgrade-package".into(),
+        name.to_string(),
+    ])
+}
+
 /// Stream output from `bootc rollback` followed by a soft overlay reset.
 /// Both run via pkexec so the user is prompted for auth once per command.
 /// The overlay soft-reset ensures the overlay is rebuilt from the packages

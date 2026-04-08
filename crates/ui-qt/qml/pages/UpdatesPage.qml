@@ -765,9 +765,9 @@ Item {
                                                 backend.installApp(pkg.app_id || pkg.id || "", "flatpak");
                                             }
                                         } else {
-                                            // RPM individual update upgrades ALL packages — mark all rpm rows
-                                            updatesPage.activeUpdateType = "packages";
-                                            backend.upgradePackages();
+                                            // Individual RPM update — only upgrade this specific package
+                                            updatesPage.activeUpdateType = pkgId;
+                                            backend.upgradePackage(pkg.name);
                                         }
                                         pollTimer.start();
                                     }

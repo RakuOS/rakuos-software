@@ -761,6 +761,11 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
         let icon_path = pkg["icon_path"].as_str().unwrap_or("").to_string();
         let icon_url  = pkg["icon_url"].as_str().unwrap_or("").to_string();
 
+        let pkg_row = GBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(4)
+            .build();
+
         let row = GBox::builder()
             .orientation(Orientation::Horizontal)
             .spacing(12)
@@ -783,8 +788,68 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
                 .build());
         }
         row.append(&info);
-        card.append(&row);
+
+        let upd_btn = Button::builder()
+            .label("Update")
+            .valign(Align::Center)
+            .build();
+        row.append(&upd_btn);
+        pkg_row.append(&row);
+
+        let row_prog = ProgressBar::builder()
+            .margin_start(12).margin_end(12)
+            .visible(false)
+            .build();
+        pkg_row.append(&row_prog);
+        card.append(&pkg_row);
         card.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+        // Wire per-row Update button
+        let pkg_name  = name.clone();
+        let state_p   = state.clone();
+        let prog_p    = row_prog.clone();
+        let btn_p     = upd_btn.clone();
+        let row_p     = pkg_row.clone();
+
+        upd_btn.connect_clicked(move |btn| {
+            if state_p.is_running() { return; }
+            state_p.start(&pkg_name);
+            btn.set_sensitive(false);
+            btn.set_label("Updating…");
+            prog_p.set_fraction(0.0);
+            prog_p.set_visible(true);
+
+            let name_t = pkg_name.clone();
+            let (tx, rx) = mpsc::channel::<bool>();
+            std::thread::spawn(move || {
+                let ok = rakuos_updates::upgrade_single_package_stream(&name_t)
+                    .any(|l| l.starts_with("__done__0"));
+                let _ = tx.send(ok);
+            });
+
+            let state_r = state_p.clone();
+            let prog_r  = prog_p.clone();
+            let btn_r   = btn_p.clone();
+            let row_r   = row_p.clone();
+
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                match rx.try_recv() {
+                    Ok(ok) => {
+                        state_r.stop();
+                        prog_r.set_visible(false);
+                        if ok {
+                            row_r.set_visible(false);
+                        } else {
+                            btn_r.set_sensitive(true);
+                            btn_r.set_label("Retry");
+                        }
+                        glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(_) => { state_r.stop(); glib::ControlFlow::Break }
+                }
+            });
+        });
     }
 
     card.append(&progress);

@@ -599,6 +599,28 @@ pub struct SoftwareBackend {
         });
     }),
 
+    upgradePackage: qt_method!(fn upgradePackage(&mut self, name: QString) {
+        let name = name.to_string();
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), format!("Upgrading package {}...\n", name));
+            let mut exit_code = 1i32;
+            for line in rakuos_updates::upgrade_single_package_stream(&name) {
+                if let Some(code) = line.strip_prefix("__done__") {
+                    exit_code = code.trim().parse().unwrap_or(1);
+                } else {
+                    if let Some(pct) = parse_layers_progress(&line) {
+                        shared.progress.store(pct, Ordering::Relaxed);
+                    }
+                    if !line.is_empty() { append_log(&line); }
+                }
+            }
+            shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
     // ── Install / Remove ─────────────────────────────────────────────────────
 
     installApp: qt_method!(fn installApp(&mut self, id: QString, source: QString) {
