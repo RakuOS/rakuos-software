@@ -385,8 +385,18 @@ fn load_updates(
                 let apps:     Vec<FlatpakUpdate> = flatpaks.iter().filter(|f| !f.runtime).cloned().collect();
                 let runtimes: Vec<FlatpakUpdate> = flatpaks.iter().filter(|f|  f.runtime).cloned().collect();
 
+                // Split RPM packages by gui field — gui=true go to Applications, gui=false to Overlay Dependencies
+                let gui_pkgs: Vec<serde_json::Value> = packages.iter()
+                    .filter(|p| p["gui"].as_bool().unwrap_or(false))
+                    .cloned().collect();
+                let dep_pkgs: Vec<serde_json::Value> = packages.iter()
+                    .filter(|p| !p["gui"].as_bool().unwrap_or(false))
+                    .cloned().collect();
+
                 let has_image      = system.available;
                 let reboot_pending = system.reboot_required;
+                let has_gui_pkgs   = !gui_pkgs.is_empty();
+                let has_dep_pkgs   = !dep_pkgs.is_empty();
                 let has_pkgs       = !packages.is_empty();
                 let has_apps       = !apps.is_empty();
                 let has_runtimes   = !runtimes.is_empty();
@@ -429,14 +439,14 @@ fn load_updates(
                         ));
                     }
 
-                    // Package updates section
-                    if has_pkgs {
-                        content.append(&build_packages_section(&packages, state.clone(), status_lbl.clone()));
+                    // Applications: gui RPM packages + non-runtime flatpaks
+                    if has_gui_pkgs || has_apps {
+                        content.append(&build_apps_section(&gui_pkgs, &apps, state.clone(), status_lbl.clone()));
                     }
 
-                    // Applications section (non-runtime flatpaks)
-                    if has_apps {
-                        content.append(&build_flatpak_section("Applications", &apps, state.clone()));
+                    // Overlay Dependencies: non-gui RPM packages
+                    if has_dep_pkgs {
+                        content.append(&build_packages_section("Overlay Dependencies", &dep_pkgs, state.clone(), status_lbl.clone()));
                     }
 
                     // Runtimes / Add-ons section
@@ -448,7 +458,7 @@ fn load_updates(
                     let sys_repo  = system.repo_url.clone();
                     let sys_tag   = system.new_tag.clone();
                     let do_image  = system.available;
-                    let do_pkgs   = has_pkgs;
+                    let do_pkgs   = has_pkgs;  // upgrade_packages_stream handles all overlay pkgs
                     let all_fps   = flatpaks.clone();
                     let state_a   = state.clone();
                     let status_a  = status_lbl.clone();
@@ -706,7 +716,7 @@ fn build_image_card(
 
 // ── Package updates section card ─────────────────────────────────────────────
 
-fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, status_lbl: Label) -> Widget {
+fn build_packages_section(title: &str, packages: &[serde_json::Value], state: UpdateState, status_lbl: Label) -> Widget {
     let card = GBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(0)
@@ -721,7 +731,7 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
         .margin_start(12).margin_end(12)
         .build();
     header.append(&Label::builder()
-        .label("Packages")
+        .label(title)
         .halign(Align::Start).hexpand(true)
         .css_classes(vec!["heading".to_string()])
         .build());
@@ -946,6 +956,246 @@ fn build_packages_section(packages: &[serde_json::Value], state: UpdateState, st
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
+            }
+        });
+    });
+
+    card.upcast()
+}
+
+// ── Applications section: gui RPM packages + non-runtime flatpaks ────────────
+
+fn build_apps_section(
+    gui_pkgs: &[serde_json::Value],
+    apps: &[FlatpakUpdate],
+    state: UpdateState,
+    status_lbl: Label,
+) -> Widget {
+    let card = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(0)
+        .css_classes(vec!["card".to_string()])
+        .build();
+
+    let total_count = gui_pkgs.len() + apps.len();
+
+    let header = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(12).margin_bottom(8)
+        .margin_start(12).margin_end(12)
+        .build();
+    header.append(&Label::builder()
+        .label("Applications")
+        .halign(Align::Start).hexpand(true)
+        .css_classes(vec!["heading".to_string()])
+        .build());
+    header.append(&Label::builder()
+        .label(&format!("{} update{}", total_count, if total_count == 1 { "" } else { "s" }))
+        .halign(Align::End)
+        .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
+        .build());
+
+    let update_all_btn = Button::builder()
+        .label("Update All")
+        .valign(Align::Center)
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+    header.append(&update_all_btn);
+    card.append(&header);
+    card.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+    // Shared remaining counter: when it hits 0, hide the whole card
+    let remaining = Rc::new(Cell::new(total_count));
+
+    // ── RPM rows ──────────────────────────────────────────────────────────────
+    for pkg in gui_pkgs {
+        let name = pkg["name"].as_str().unwrap_or("").to_string();
+        let cur  = pkg["current_version"].as_str().unwrap_or("").to_string();
+        let new  = pkg["version"].as_str().unwrap_or("").to_string();
+        let icon_path = pkg["icon_path"].as_str().unwrap_or("").to_string();
+        let icon_url  = pkg["icon_url"].as_str().unwrap_or("").to_string();
+
+        let pkg_row = GBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(4)
+            .build();
+
+        let row = GBox::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(12)
+            .margin_top(8).margin_bottom(8)
+            .margin_start(12).margin_end(12)
+            .build();
+        row.append(&super::icon_helper::load_app_icon(&icon_path, &icon_url, 28, &name));
+
+        let info = GBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(2).valign(Align::Center).hexpand(true)
+            .build();
+        info.append(&Label::builder().label(&name).halign(Align::Start)
+            .css_classes(vec!["heading".to_string()]).build());
+        if !cur.is_empty() && !new.is_empty() {
+            info.append(&Label::builder()
+                .label(&format!("{} → {}", cur, new))
+                .halign(Align::Start)
+                .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+                .build());
+        }
+        row.append(&info);
+
+        let upd_btn = Button::builder().label("Update").valign(Align::Center).build();
+        row.append(&upd_btn);
+        pkg_row.append(&row);
+
+        let row_prog = ProgressBar::builder()
+            .margin_start(12).margin_end(12)
+            .visible(false)
+            .build();
+        pkg_row.append(&row_prog);
+        card.append(&pkg_row);
+        card.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+        let pkg_name = name.clone();
+        let state_p  = state.clone();
+        let prog_p   = row_prog.clone();
+        let btn_p    = upd_btn.clone();
+        let row_p    = pkg_row.clone();
+        let rem_p    = remaining.clone();
+        let card_p   = card.clone();
+
+        upd_btn.connect_clicked(move |btn| {
+            if state_p.is_running() { return; }
+            state_p.start(&pkg_name);
+            btn.set_sensitive(false);
+            btn.set_label("Updating…");
+            prog_p.set_fraction(0.02);
+            prog_p.set_visible(true);
+
+            let name_t = pkg_name.clone();
+            let (tx, rx) = mpsc::channel::<ProgressMsg>();
+            std::thread::spawn(move || {
+                for line in rakuos_updates::upgrade_single_package_stream(&name_t) {
+                    if let Some(code) = line.strip_prefix("__done__") {
+                        let _ = tx.send(ProgressMsg::Done(code.trim() == "0"));
+                        return;
+                    }
+                    if let Some(pct) = parse_dnf_progress(&line) {
+                        let _ = tx.send(ProgressMsg::Progress(pct));
+                    }
+                }
+                let _ = tx.send(ProgressMsg::Done(false));
+            });
+
+            let state_r = state_p.clone();
+            let prog_r  = prog_p.clone();
+            let btn_r   = btn_p.clone();
+            let row_r   = row_p.clone();
+            let rem_r   = rem_p.clone();
+            let card_r  = card_p.clone();
+
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let mut got_real = false;
+                let mut done_result: Option<bool> = None;
+                loop {
+                    match rx.try_recv() {
+                        Ok(ProgressMsg::Progress(pct)) => { prog_r.set_fraction(pct); got_real = true; }
+                        Ok(ProgressMsg::Done(ok))      => { done_result = Some(ok); break; }
+                        Err(_)                         => break,
+                    }
+                }
+                if !got_real && done_result.is_none() {
+                    let cur = prog_r.fraction();
+                    if cur < 0.95 { prog_r.set_fraction((cur + 0.01).min(0.95)); }
+                }
+                if let Some(ok) = done_result {
+                    prog_r.set_fraction(1.0);
+                    state_r.stop();
+                    prog_r.set_visible(false);
+                    if ok {
+                        row_r.set_visible(false);
+                        let rem = rem_r.get().saturating_sub(1);
+                        rem_r.set(rem);
+                        if rem == 0 { card_r.set_visible(false); }
+                    } else {
+                        btn_r.set_sensitive(true);
+                        btn_r.set_label("Retry");
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        });
+    }
+
+    // ── Flatpak app rows ──────────────────────────────────────────────────────
+    let fp_count = apps.len();
+    for (i, fp) in apps.iter().enumerate() {
+        card.append(&build_flatpak_row(fp, state.clone(), remaining.clone(), card.clone()));
+        if i + 1 < fp_count {
+            card.append(&gtk4::Separator::new(Orientation::Horizontal));
+        }
+    }
+
+    // ── Update All: upgrade each item individually ────────────────────────────
+    let rpm_names: Vec<String> = gui_pkgs.iter()
+        .filter_map(|p| p["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    let fps_all  = apps.to_vec();
+    let state_a  = state.clone();
+    let btn_a    = update_all_btn.clone();
+    let card_a   = card.clone();
+    let status_a = status_lbl.clone();
+
+    update_all_btn.connect_clicked(move |btn| {
+        if state_a.is_running() { return; }
+        state_a.start("apps-all");
+        btn.set_sensitive(false);
+        btn.set_label("Updating…");
+        status_a.set_label("Updating applications…");
+
+        let names = rpm_names.clone();
+        let fps   = fps_all.clone();
+        let (tx, rx) = mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let mut all_ok = true;
+            for name in &names {
+                let ok = rakuos_updates::upgrade_single_package_stream(name)
+                    .any(|l| l.starts_with("__done__0"));
+                if !ok { all_ok = false; }
+            }
+            for fp in &fps {
+                let ok = if fp.needs_install {
+                    rakuos_flatpak::install_ref_stream(&fp.install_remote, &fp.app_id, &fp.version)
+                        .any(|l| l.starts_with("__done__0"))
+                } else {
+                    rakuos_flatpak::update_single_stream(&fp.app_id)
+                        .any(|l| l.starts_with("__done__0"))
+                };
+                if !ok { all_ok = false; }
+            }
+            let _ = tx.send(all_ok);
+        });
+
+        let state_r  = state_a.clone();
+        let btn_r    = btn_a.clone();
+        let card_r   = card_a.clone();
+        let status_r = status_a.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(ok) => {
+                    state_r.stop();
+                    if ok {
+                        card_r.set_visible(false);
+                        status_r.set_label("Applications updated");
+                    } else {
+                        btn_r.set_label("Retry");
+                        btn_r.set_sensitive(true);
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => { state_r.stop(); glib::ControlFlow::Break }
             }
         });
     });

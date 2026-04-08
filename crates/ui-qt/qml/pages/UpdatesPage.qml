@@ -25,6 +25,10 @@ Item {
     // Keys: specific app_id, "__packages__" for all rpm rows, "__flatpak__" for all flatpak rows.
     property var completedUpdates: ({})
 
+    // Fake-advance progress — advances toward 95% in pollTimer so bar is always visibly moving.
+    // Real parsed progress from backend always wins if higher.
+    property int _fakeProgress: 2
+
     // On activate: if we already have data show it instantly; otherwise kick
     // off our own enriched check (same path as the manual "Check" button so
     // icons are always populated via AppStream).
@@ -75,6 +79,7 @@ Item {
         pendingOpIsCheck = true;
         inQueueMode = false;
         completedUpdates = ({});
+        _fakeProgress = 2;
         backend.checkUpdates();
         pollTimer.start();
     }
@@ -86,19 +91,33 @@ Item {
         repeat: true
         onTriggered: {
             backend.pollOp();
+
+            // Fake-advance progress for package/flatpak ops so the bar is always visibly moving.
+            // Real progress from backend always wins if it's higher; bar never goes backwards.
+            if (updating && !pendingOpIsCheck && activeUpdateType !== "image" && backend.opRunning) {
+                var real = backend.opProgress;
+                if (real > updatesPage._fakeProgress) {
+                    updatesPage._fakeProgress = real;
+                } else if (updatesPage._fakeProgress < 95) {
+                    updatesPage._fakeProgress = Math.min(updatesPage._fakeProgress + 2, 95);
+                }
+            }
+
             if (!backend.opRunning) {
                 pollTimer.stop();
                 if (inQueueMode) {
                     var finishedStep = updateQueue[queueStep];
-                    // Record batch completion for row hiding
+                    // Record batch completion for row hiding.
+                    // IMPORTANT: use Object.assign to create a NEW object so QML detects the change.
                     if (backend.opResult === 1) {
-                        var co = completedUpdates;
+                        var co = Object.assign({}, completedUpdates);
                         if (finishedStep === "packages") co["__packages__"] = true;
                         else if (finishedStep === "flatpak") co["__flatpak__"] = true;
                         completedUpdates = co;
                     }
                     queueStep++;
                     if (queueStep < updateQueue.length) {
+                        _fakeProgress = 2;
                         _runQueueStep();
                     } else {
                         // Entire queue done
@@ -129,8 +148,9 @@ Item {
                     } else if (wasImageUpdate) {
                         imageUpdateDone = true;
                     } else if (backend.opResult === 1) {
-                        // Individual or section update succeeded — record for row hiding
-                        var co2 = completedUpdates;
+                        // Individual or section update succeeded — record for row hiding.
+                        // IMPORTANT: use Object.assign to create a NEW object so QML detects the change.
+                        var co2 = Object.assign({}, completedUpdates);
                         if (savedType === "packages") {
                             co2["__packages__"] = true;
                         } else if (savedType === "flatpak") {
@@ -563,6 +583,7 @@ Item {
     }
 
     function _runQueueStep() {
+        _fakeProgress = 2;
         var step = updateQueue[queueStep];
         var total = updateQueue.length;
         var stepNum = queueStep + 1;
@@ -776,6 +797,7 @@ Item {
                                         updatesPage.inQueueMode = false;
                                         updatesPage.pendingOpIsCheck = false;
                                         updatesPage.updating = true;
+                                        updatesPage._fakeProgress = 2;
                                         if (pkg.pkg_type === "flatpak") {
                                             updatesPage.activeUpdateType = pkgId;
                                             if (pkg.needs_install) {
@@ -795,14 +817,15 @@ Item {
                                 }
                             }
 
-                            // Per-row progress bar — visible while this row's update runs
+                            // Per-row progress bar — visible while this row's update runs.
+                            // Uses _fakeProgress so bar is always visibly moving even without parsed output.
                             ProgressBar {
                                 width: parent.width
                                 height: 6
                                 visible: rowUpdating
                                 from: 0; to: 100
                                 indeterminate: false
-                                value: backend.opProgress
+                                value: updatesPage._fakeProgress
                             }
                         }
                     }
