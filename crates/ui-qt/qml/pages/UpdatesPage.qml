@@ -25,9 +25,6 @@ Item {
     // Keys: specific app_id, "__packages__" for all rpm rows, "__flatpak__" for all flatpak rows.
     property var completedUpdates: ({})
 
-    // Fake-advance progress — advances toward 95% in pollTimer so bar is always visibly moving.
-    // Real parsed progress from backend always wins if higher.
-    property int _fakeProgress: 20
 
     // On activate: if we already have data show it instantly; otherwise kick
     // off our own enriched check (same path as the manual "Check" button so
@@ -79,7 +76,6 @@ Item {
         pendingOpIsCheck = true;
         inQueueMode = false;
         completedUpdates = ({});
-        _fakeProgress = 20;
         backend.checkUpdates();
         pollTimer.start();
     }
@@ -91,18 +87,6 @@ Item {
         repeat: true
         onTriggered: {
             backend.pollOp();
-
-            // Fake-advance progress for package/flatpak ops so the bar is always visibly moving.
-            // NOT gated on backend.opRunning — fast ops still need visible progress before completion.
-            // Real parsed progress from backend always wins if higher; bar never goes backwards.
-            if (updating && !pendingOpIsCheck && activeUpdateType !== "image") {
-                var real = backend.opProgress;
-                if (real > updatesPage._fakeProgress) {
-                    updatesPage._fakeProgress = real;
-                } else if (updatesPage._fakeProgress < 95) {
-                    updatesPage._fakeProgress = Math.min(updatesPage._fakeProgress + 5, 95);
-                }
-            }
 
             if (!backend.opRunning) {
                 pollTimer.stop();
@@ -118,7 +102,6 @@ Item {
                     }
                     queueStep++;
                     if (queueStep < updateQueue.length) {
-                        _fakeProgress = 20;
                         _runQueueStep();
                     } else {
                         // Entire queue done
@@ -578,7 +561,6 @@ Item {
     }
 
     function _runQueueStep() {
-        _fakeProgress = 20;
         var step = updateQueue[queueStep];
         var total = updateQueue.length;
         var stepNum = queueStep + 1;
@@ -608,7 +590,6 @@ Item {
         inQueueMode = false;
         pendingOpIsCheck = false;
         updating = true;
-        _fakeProgress = 20;
         var hasFlatpak = pkgs.some(function(p) { return p.pkg_type === "flatpak"; });
         var hasRpm     = pkgs.some(function(p) { return p.pkg_type === "rpm"; });
         if (hasFlatpak) {
@@ -812,7 +793,6 @@ Item {
                                         updatesPage.inQueueMode = false;
                                         updatesPage.pendingOpIsCheck = false;
                                         updatesPage.updating = true;
-                                        updatesPage._fakeProgress = 20;
                                         if (pkg.pkg_type === "flatpak") {
                                             updatesPage.activeUpdateType = pkgId;
                                             if (pkg.needs_install) {
@@ -832,15 +812,27 @@ Item {
                                 }
                             }
 
-                            // Per-row progress bar — visible while this row's update runs.
-                            // Uses _fakeProgress so bar is always visibly moving even without parsed output.
-                            ProgressBar {
+                            // Per-row throbber — shown while this row's update is running.
+                            // Indeterminate bar + text label so the user always sees activity.
+                            Column {
                                 width: parent.width
-                                height: 10
+                                spacing: 3
                                 visible: rowUpdating
-                                from: 0; to: 100
-                                indeterminate: false
-                                value: updatesPage._fakeProgress
+                                topPadding: 2
+                                bottomPadding: 4
+
+                                Label {
+                                    text: "Updating " + (modelData.name || modelData.app_id || modelData.id || "") + "…"
+                                    font.pixelSize: 10
+                                    color: root.dimText
+                                    leftPadding: 2
+                                }
+
+                                ProgressBar {
+                                    width: parent.width
+                                    height: 8
+                                    indeterminate: true
+                                }
                             }
                         }
                     }
