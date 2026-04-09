@@ -19,11 +19,16 @@ fn show_flag_path() -> std::path::PathBuf {
 
 /// Returns true if a prior instance is already running (PID file + /proc check).
 fn instance_already_running() -> bool {
-    std::fs::read_to_string(pid_file())
+    let Some(pid) = std::fs::read_to_string(pid_file())
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
-        .map(|pid| std::path::Path::new(&format!("/proc/{}", pid)).exists())
-        .unwrap_or(false)
+    else {
+        return false;
+    };
+    // Verify the PID actually belongs to our process, not a recycled PID
+    let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))
+        .unwrap_or_default();
+    cmdline.contains("rakuos-software-qt")
 }
 
 fn write_pid_file() {

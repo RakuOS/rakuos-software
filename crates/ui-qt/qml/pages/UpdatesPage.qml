@@ -27,7 +27,7 @@ Item {
 
     // Fake-advance progress — advances toward 95% in pollTimer so bar is always visibly moving.
     // Real parsed progress from backend always wins if higher.
-    property int _fakeProgress: 2
+    property int _fakeProgress: 20
 
     // On activate: if we already have data show it instantly; otherwise kick
     // off our own enriched check (same path as the manual "Check" button so
@@ -79,7 +79,7 @@ Item {
         pendingOpIsCheck = true;
         inQueueMode = false;
         completedUpdates = ({});
-        _fakeProgress = 2;
+        _fakeProgress = 20;
         backend.checkUpdates();
         pollTimer.start();
     }
@@ -93,13 +93,14 @@ Item {
             backend.pollOp();
 
             // Fake-advance progress for package/flatpak ops so the bar is always visibly moving.
-            // Real progress from backend always wins if it's higher; bar never goes backwards.
-            if (updating && !pendingOpIsCheck && activeUpdateType !== "image" && backend.opRunning) {
+            // NOT gated on backend.opRunning — fast ops still need visible progress before completion.
+            // Real parsed progress from backend always wins if higher; bar never goes backwards.
+            if (updating && !pendingOpIsCheck && activeUpdateType !== "image") {
                 var real = backend.opProgress;
                 if (real > updatesPage._fakeProgress) {
                     updatesPage._fakeProgress = real;
                 } else if (updatesPage._fakeProgress < 95) {
-                    updatesPage._fakeProgress = Math.min(updatesPage._fakeProgress + 2, 95);
+                    updatesPage._fakeProgress = Math.min(updatesPage._fakeProgress + 5, 95);
                 }
             }
 
@@ -117,7 +118,7 @@ Item {
                     }
                     queueStep++;
                     if (queueStep < updateQueue.length) {
-                        _fakeProgress = 2;
+                        _fakeProgress = 20;
                         _runQueueStep();
                     } else {
                         // Entire queue done
@@ -506,7 +507,6 @@ Item {
 
                     // ── Applications section (GUI packages + flatpak + appimages) ─
                     UpdateSection {
-                        visible: appPackages.length > 0
                         title: "Applications"
                         packages: {
                             if (!updateData) return [];
@@ -528,33 +528,28 @@ Item {
                             }
                             return result;
                         }
-                        property var appPackages: packages
                         onUpdateAllClicked: _doSectionUpdate(packages)
                     }
 
                     // ── Flatpak runtimes / add-ons ────────────────────────────
                     UpdateSection {
-                        visible: runtimePkgs.length > 0
                         title: "Runtimes/Add-ons"
                         packages: {
                             if (!updateData || !updateData.flatpak) return [];
                             return updateData.flatpak.filter(function(p) { return p.runtime; })
                                 .map(function(p) { return Object.assign({}, p, {pkg_type: "flatpak"}); });
                         }
-                        property var runtimePkgs: packages
                         onUpdateAllClicked: _doSectionUpdate(packages)
                     }
 
-                    // ── System packages ───────────────────────────────────────
+                    // ── Overlay Dependencies ──────────────────────────────────
                     UpdateSection {
-                        visible: sysPkgs.length > 0
                         title: "Overlay Dependencies"
                         packages: {
                             if (!updateData || !updateData.packages) return [];
                             return updateData.packages.filter(function(p) { return !p.gui; })
                                 .map(function(p) { return Object.assign({}, p, {pkg_type: "rpm"}); });
                         }
-                        property var sysPkgs: packages
                         onUpdateAllClicked: _doSectionUpdate(packages)
                     }
                 }
@@ -583,7 +578,7 @@ Item {
     }
 
     function _runQueueStep() {
-        _fakeProgress = 2;
+        _fakeProgress = 20;
         var step = updateQueue[queueStep];
         var total = updateQueue.length;
         var stepNum = queueStep + 1;
@@ -613,6 +608,7 @@ Item {
         inQueueMode = false;
         pendingOpIsCheck = false;
         updating = true;
+        _fakeProgress = 20;
         var hasFlatpak = pkgs.some(function(p) { return p.pkg_type === "flatpak"; });
         var hasRpm     = pkgs.some(function(p) { return p.pkg_type === "rpm"; });
         if (hasFlatpak) {
@@ -634,6 +630,25 @@ Item {
         property string title: ""
         property var packages: []
         signal updateAllClicked(var pkgs)
+
+        // Live count: how many rows in this section haven't completed yet.
+        // Re-evaluates whenever completedUpdates changes (Object.assign ensures new reference).
+        readonly property int remainingCount: {
+            var cu = updatesPage.completedUpdates;
+            var n = 0;
+            for (var i = 0; i < secRoot.packages.length; i++) {
+                var p = secRoot.packages[i];
+                var id = p.app_id || p.id || p.name || "";
+                var done = (id && cu[id]) ||
+                           (p.pkg_type === "rpm"     && cu["__packages__"]) ||
+                           (p.pkg_type === "flatpak" && cu["__flatpak__"]);
+                if (!done) n++;
+            }
+            return n;
+        }
+
+        // Section hides itself when all its rows are done or when there are no packages.
+        visible: remainingCount > 0
 
         width: parent ? parent.width - 48 : 400
         height: secCol.implicitHeight + 24
@@ -658,7 +673,7 @@ Item {
                 }
 
                 Label {
-                    text: secRoot.packages.length + " update" + (secRoot.packages.length !== 1 ? "s" : "")
+                    text: secRoot.remainingCount + " update" + (secRoot.remainingCount !== 1 ? "s" : "")
                     color: root.dimText
                     font.pixelSize: 12
                 }
@@ -797,7 +812,7 @@ Item {
                                         updatesPage.inQueueMode = false;
                                         updatesPage.pendingOpIsCheck = false;
                                         updatesPage.updating = true;
-                                        updatesPage._fakeProgress = 2;
+                                        updatesPage._fakeProgress = 20;
                                         if (pkg.pkg_type === "flatpak") {
                                             updatesPage.activeUpdateType = pkgId;
                                             if (pkg.needs_install) {
@@ -821,7 +836,7 @@ Item {
                             // Uses _fakeProgress so bar is always visibly moving even without parsed output.
                             ProgressBar {
                                 width: parent.width
-                                height: 6
+                                height: 10
                                 visible: rowUpdating
                                 from: 0; to: 100
                                 indeterminate: false
