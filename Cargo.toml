@@ -20,6 +20,7 @@ resolver = "2"
 version = "1.0.0"
 authors = ["RakuOS Project"]
 license = "GPL-3.0-or-later"
+edition = "2021"
 
 [workspace.dependencies]
 # Backend shared deps
