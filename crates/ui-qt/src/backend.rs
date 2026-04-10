@@ -259,6 +259,33 @@ pub struct SoftwareBackend {
         });
     }),
 
+    /// Install a user-defined custom web app.
+    /// icon_source: local file path or HTTP(S) URL, or empty for no icon.
+    installCustomWebApp: qt_method!(fn installCustomWebApp(
+        &mut self,
+        name:        QString,
+        url:         QString,
+        description: QString,
+        category:    QString,
+        icon_source: QString,
+    ) {
+        self.start_op();
+        let shared = self.get_shared();
+        let name        = name.to_string();
+        let url         = url.to_string();
+        let description = description.to_string();
+        let category    = category.to_string();
+        let icon_source = icon_source.to_string();
+        std::thread::spawn(move || {
+            let (ok, msg) = rakuos_webapps::install_custom(
+                &name, &url, &description, &category, &icon_source,
+            );
+            append_log(&msg);
+            shared.result.store(if ok { 1 } else { 0 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
     // ── AppImage settings ─────────────────────────────────────────────────────
 
     // ── Local file install ────────────────────────────────────────────────────

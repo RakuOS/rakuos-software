@@ -2,12 +2,16 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    glib, Align, Box as GBox, Button, FlowBox, FlowBoxChild, Label, Orientation, ScrolledWindow,
-    SelectionMode, Widget,
+    glib, Align, Box as GBox, Button, FileChooserAction, FileChooserNative, FileFilter,
+    FlowBox, FlowBoxChild, Label, Orientation, ResponseType, ScrolledWindow, SelectionMode,
+    StringList, ToggleButton, Widget,
 };
 use libadwaita::prelude::*;
-use libadwaita::{Carousel, HeaderBar, NavigationPage, NavigationView, ToolbarView};
-use std::sync::{mpsc, Arc};
+use libadwaita::{
+    ActionRow, Carousel, ComboRow, EntryRow, HeaderBar, NavigationPage, NavigationView,
+    PreferencesGroup, ToolbarView,
+};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use rakuos_webapps::WebApp;
@@ -45,6 +49,14 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
         .build();
     main_box.append(&subtitle_lbl);
 
+    // "Add Custom Web App" button
+    let add_custom_btn = Button::builder()
+        .label("+ Add Custom Web App")
+        .halign(Align::Start)
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+    main_box.append(&add_custom_btn);
+
     let flow = FlowBox::builder()
         .selection_mode(SelectionMode::None)
         .min_children_per_line(2)
@@ -60,6 +72,14 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
         .halign(Align::Center)
         .build();
     main_box.append(&spinner);
+
+    // Wire "Add Custom" button
+    let flow_for_btn = flow.clone();
+    let nav_for_btn = Arc::clone(&nav);
+    add_custom_btn.connect_clicked(move |btn| {
+        let parent = btn.root().and_downcast::<gtk4::Window>();
+        show_add_custom_dialog(parent, Arc::clone(&nav_for_btn), flow_for_btn.clone());
+    });
 
     let nav_c = Arc::clone(&nav);
     let (tx, rx) = mpsc::channel::<Vec<WebApp>>();
@@ -96,6 +116,304 @@ pub fn build(nav: Arc<NavigationView>) -> Widget {
     });
 
     outer_scroll.upcast()
+}
+
+fn show_add_custom_dialog(
+    parent: Option<gtk4::Window>,
+    nav: Arc<NavigationView>,
+    flow: FlowBox,
+) {
+    let dialog = gtk4::Window::builder()
+        .title("Add Custom Web App")
+        .modal(true)
+        .default_width(500)
+        .resizable(false)
+        .build();
+
+    if let Some(ref p) = parent {
+        dialog.set_transient_for(Some(p));
+    }
+
+    let vbox = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .build();
+
+    let header = HeaderBar::new();
+    vbox.append(&header);
+
+    let form = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+
+    // ── App details group ──────────────────────────────────────────────────────
+
+    let name_entry = EntryRow::builder().title("App Name").build();
+    let url_entry  = EntryRow::builder().title("URL (e.g. https://example.com)").build();
+    let desc_entry = EntryRow::builder().title("Description").build();
+
+    let cat_model = StringList::new(&[
+        "Network", "Office", "Utility", "AudioVideo",
+        "Education", "Game", "Graphics", "Science",
+    ]);
+    let cat_row = ComboRow::builder()
+        .title("Menu Category")
+        .model(&cat_model)
+        .build();
+
+    let details_group = PreferencesGroup::new();
+    details_group.add(&name_entry);
+    details_group.add(&url_entry);
+    details_group.add(&desc_entry);
+    details_group.add(&cat_row);
+    form.append(&details_group);
+
+    // ── Icon source ────────────────────────────────────────────────────────────
+
+    let icon_heading = Label::builder()
+        .label("Icon")
+        .halign(Align::Start)
+        .css_classes(vec!["heading".to_string()])
+        .build();
+    form.append(&icon_heading);
+
+    // Toggle: Local File / From URL
+    let local_toggle = ToggleButton::builder().label("Local File").active(true).build();
+    let url_toggle   = ToggleButton::builder().label("From URL").group(&local_toggle).build();
+    let toggle_box   = GBox::builder()
+        .spacing(0)
+        .halign(Align::Start)
+        .css_classes(vec!["linked".to_string()])
+        .build();
+    toggle_box.append(&local_toggle);
+    toggle_box.append(&url_toggle);
+    form.append(&toggle_box);
+
+    // Local file row
+    let chosen_path: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let file_row = ActionRow::builder()
+        .title("Icon File")
+        .subtitle("No file chosen")
+        .build();
+    let browse_btn = Button::builder()
+        .label("Browse…")
+        .valign(Align::Center)
+        .build();
+    file_row.add_suffix(&browse_btn);
+    let local_group = PreferencesGroup::new();
+    local_group.add(&file_row);
+    form.append(&local_group);
+
+    // URL row (hidden initially)
+    let icon_url_entry = EntryRow::builder()
+        .title("Icon URL")
+        .build();
+    let url_icon_group = PreferencesGroup::new();
+    url_icon_group.add(&icon_url_entry);
+    url_icon_group.set_visible(false);
+    form.append(&url_icon_group);
+
+    // Toggle handler
+    let local_group_c   = local_group.clone();
+    let url_icon_group_c = url_icon_group.clone();
+    url_toggle.connect_toggled(move |btn| {
+        let url_mode = btn.is_active();
+        local_group_c.set_visible(!url_mode);
+        url_icon_group_c.set_visible(url_mode);
+    });
+
+    // Browse handler
+    let chosen_path_c = Arc::clone(&chosen_path);
+    let file_row_c    = file_row.clone();
+    let dialog_c      = dialog.clone();
+    browse_btn.connect_clicked(move |_| {
+        let chooser = FileChooserNative::builder()
+            .title("Choose Icon")
+            .action(FileChooserAction::Open)
+            .transient_for(&dialog_c)
+            .build();
+        let filter = FileFilter::new();
+        filter.add_mime_type("image/*");
+        filter.set_name(Some("Image files"));
+        chooser.add_filter(&filter);
+
+        let chosen_c  = Arc::clone(&chosen_path_c);
+        let row_c     = file_row_c.clone();
+        chooser.connect_response(move |fc, resp| {
+            if resp == ResponseType::Accept {
+                if let Some(file) = fc.file() {
+                    if let Some(path) = file.path() {
+                        let fname = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "file".to_string());
+                        row_c.set_subtitle(&fname);
+                        *chosen_c.lock().unwrap() = path.to_string_lossy().to_string();
+                    }
+                }
+            }
+        });
+        chooser.show();
+    });
+
+    // ── Error label ────────────────────────────────────────────────────────────
+
+    let error_lbl = Label::builder()
+        .visible(false)
+        .halign(Align::Start)
+        .css_classes(vec!["error".to_string()])
+        .build();
+    form.append(&error_lbl);
+
+    // ── Action buttons ─────────────────────────────────────────────────────────
+
+    let btn_row = GBox::builder()
+        .spacing(8)
+        .halign(Align::End)
+        .margin_top(4)
+        .build();
+    let cancel_btn = Button::builder().label("Cancel").build();
+    let add_btn = Button::builder()
+        .label("Add Web App")
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+    btn_row.append(&cancel_btn);
+    btn_row.append(&add_btn);
+    form.append(&btn_row);
+
+    vbox.append(&form);
+    dialog.set_child(Some(&vbox));
+
+    // Cancel
+    let dialog_cancel = dialog.clone();
+    cancel_btn.connect_clicked(move |_| dialog_cancel.close());
+
+    // Add
+    let cat_labels = ["Network", "Office", "Utility", "AudioVideo",
+                      "Education", "Game", "Graphics", "Science"];
+
+    let name_c       = name_entry.clone();
+    let url_c        = url_entry.clone();
+    let desc_c       = desc_entry.clone();
+    let cat_c        = cat_row.clone();
+    let url_toggle_c = url_toggle.clone();
+    let icon_url_c   = icon_url_entry.clone();
+    let chosen_c     = Arc::clone(&chosen_path);
+    let error_c      = error_lbl.clone();
+    let flow_c       = flow.clone();
+    let nav_c        = Arc::clone(&nav);
+    let dialog_c     = dialog.clone();
+
+    add_btn.connect_clicked(move |btn| {
+        let name_val = name_c.text().to_string();
+        let url_val  = url_c.text().to_string();
+        let desc_val = desc_c.text().to_string();
+        let cat_idx  = cat_c.selected() as usize;
+        let cat_val  = cat_labels.get(cat_idx).copied().unwrap_or("Network").to_string();
+
+        let icon_src = if url_toggle_c.is_active() {
+            icon_url_c.text().to_string()
+        } else {
+            chosen_c.lock().unwrap().clone()
+        };
+
+        if name_val.is_empty() {
+            error_c.set_label("App name is required.");
+            error_c.set_visible(true);
+            return;
+        }
+        if url_val.is_empty() {
+            error_c.set_label("URL is required.");
+            error_c.set_visible(true);
+            return;
+        }
+        error_c.set_visible(false);
+
+        btn.set_sensitive(false);
+        btn.set_label("Adding…");
+
+        let (tx, rx) = mpsc::channel::<bool>();
+        {
+            let n = name_val.clone();
+            let u = url_val.clone();
+            let d = desc_val.clone();
+            let c = cat_val.clone();
+            let i = icon_src.clone();
+            std::thread::spawn(move || {
+                let (ok, _) = rakuos_webapps::install_custom(&n, &u, &d, &c, &i);
+                let _ = tx.send(ok);
+            });
+        }
+
+        let btn_c2      = btn.clone();
+        let flow_cc     = flow_c.clone();
+        let nav_cc      = Arc::clone(&nav_c);
+        let dialog_cc   = dialog_c.clone();
+        let name_cc     = name_val.clone();
+        let url_cc      = url_val.clone();
+        let desc_cc     = desc_val.clone();
+        let icon_cc     = icon_src.clone();
+        let error_cc    = error_c.clone();
+
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            match rx.try_recv() {
+                Ok(ok) => {
+                    btn_c2.set_sensitive(true);
+                    btn_c2.set_label("Add Web App");
+                    if ok {
+                        // Find installed app and prepend its card to the flow
+                        let installed = rakuos_webapps::get_installed();
+                        let app_id = format!("custom-{}", {
+                            let mut s = String::new();
+                            let mut last_hyph = true;
+                            for ch in name_cc.to_lowercase().chars() {
+                                if ch.is_ascii_alphanumeric() {
+                                    s.push(ch);
+                                    last_hyph = false;
+                                } else if !last_hyph {
+                                    s.push('-');
+                                    last_hyph = true;
+                                }
+                            }
+                            s.trim_end_matches('-').to_string()
+                        });
+                        let app = installed
+                            .into_iter()
+                            .find(|a| a.id == app_id)
+                            .unwrap_or_else(|| WebApp {
+                                id:          app_id,
+                                name:        name_cc.clone(),
+                                url:         url_cc.clone(),
+                                summary:     desc_cc.clone(),
+                                description: desc_cc.clone(),
+                                icon_path:   icon_cc.clone(),
+                                installed:   true,
+                                source:      "webapp".to_string(),
+                                ..Default::default()
+                            });
+                        let card  = build_webapp_card(&app, Arc::clone(&nav_cc));
+                        let child = FlowBoxChild::new();
+                        child.set_child(Some(&card));
+                        child.set_focusable(false);
+                        flow_cc.insert(&child, 0);
+                        dialog_cc.close();
+                    } else {
+                        error_cc.set_label("Failed to install web app. Check the URL and try again.");
+                        error_cc.set_visible(true);
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
+        });
+    });
+
+    dialog.present();
 }
 
 fn build_webapp_card(app: &WebApp, nav: Arc<NavigationView>) -> Widget {

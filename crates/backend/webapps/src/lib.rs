@@ -198,6 +198,110 @@ pub fn install(app_id: &str) -> (bool, String) {
     (true, format!("{} installed successfully.", app.name))
 }
 
+/// Install a custom web app defined by the user.
+/// `icon_source` may be a local file path or an HTTP(S) URL; empty string skips icon.
+pub fn install_custom(
+    name: &str,
+    url: &str,
+    description: &str,
+    category: &str,
+    icon_source: &str,
+) -> (bool, String) {
+    if name.is_empty() || url.is_empty() {
+        return (false, "Name and URL are required.".to_string());
+    }
+
+    if let Err(e) = ensure_dirs() {
+        return (false, format!("Failed to create directories: {}", e));
+    }
+
+    let app_id = format!("custom-{}", name_to_css_id(name));
+
+    // Handle icon: download URL or copy local file
+    let icon_path = if icon_source.is_empty() {
+        String::new()
+    } else if icon_source.starts_with("http://") || icon_source.starts_with("https://") {
+        let cached = icon_dir().join(format!("{}.png", app_id));
+        match download_bytes(icon_source) {
+            Ok(bytes) if !bytes.is_empty() => {
+                let _ = std::fs::write(&cached, &bytes);
+                if cached.exists() { cached.to_string_lossy().to_string() } else { String::new() }
+            }
+            _ => String::new(),
+        }
+    } else {
+        let ext = std::path::Path::new(icon_source)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png");
+        let cached = icon_dir().join(format!("{}.{}", app_id, ext));
+        if std::fs::copy(icon_source, &cached).is_ok() {
+            cached.to_string_lossy().to_string()
+        } else {
+            String::new()
+        }
+    };
+
+    let cat = if category.is_empty() { "Network" } else { category };
+    let icon_url = if icon_source.starts_with("http://") || icon_source.starts_with("https://") {
+        icon_source.to_string()
+    } else {
+        String::new()
+    };
+
+    let app = WebApp {
+        id:          app_id.clone(),
+        name:        name.to_string(),
+        url:         url.to_string(),
+        summary:     description.chars().take(120).collect(),
+        description: description.to_string(),
+        icon_path:   icon_path.clone(),
+        icon_url:    icon_url.clone(),
+        categories:  vec![cat.to_string()],
+        source:      "webapp".to_string(),
+        installed:   true,
+        ..Default::default()
+    };
+
+    let sidecar = serde_json::json!({
+        "id":           app.id,
+        "name":         app.name,
+        "url":          app.url,
+        "website":      "",
+        "description":  app.description,
+        "summary":      app.summary,
+        "icon_path":    icon_path,
+        "icon_url":     icon_url,
+        "categories":   app.categories,
+        "keywords":     [],
+        "screenshots":  [],
+        "custom_css":   "",
+        "session_group": "",
+        "mimetypes":    [],
+        "source":       "webapp",
+        "installed":    true,
+    });
+
+    let sidecar_path = install_dir().join(format!("{}.json", app_id));
+    if let Err(e) = std::fs::write(&sidecar_path, serde_json::to_string_pretty(&sidecar).unwrap()) {
+        return (false, format!("Failed to write sidecar: {}", e));
+    }
+
+    // Empty CSS file (matches launcher expectation)
+    let css_id = name_to_css_id(name);
+    let _ = std::fs::write(install_dir().join(format!("{}.css", css_id)), "");
+
+    if let Err(e) = write_desktop(&app, &icon_path) {
+        return (false, format!("Failed to write .desktop: {}", e));
+    }
+
+    let _ = Command::new("update-desktop-database")
+        .arg(desktop_dir())
+        .output();
+
+    (true, format!("{} installed as a web app.", name))
+}
+
 /// Uninstall a web app. Returns (success, message).
 pub fn uninstall(app_id: &str) -> (bool, String) {
     let sidecar = install_dir().join(format!("{}.json", app_id));
