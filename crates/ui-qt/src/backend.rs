@@ -985,6 +985,13 @@ pub struct SoftwareBackend {
         CACHE_READY.load(Ordering::Acquire)
     }),
 
+    // Returns true when running in a live ISO environment (liveuser session).
+    // Used by QML to hide the System page from the sidebar.
+    isLiveEnvironment: qt_method!(fn isLiveEnvironment(&mut self) -> bool {
+        std::env::var("USER").unwrap_or_default() == "liveuser"
+            || std::path::Path::new("/run/live").exists()
+    }),
+
     // Check if main.rs wrote a "start hidden" flag (launched with --tray).
     // Returns true once (deletes the flag) so QML knows to stay hidden at startup.
     readStartHidden: qt_method!(fn readStartHidden(&mut self) -> bool {

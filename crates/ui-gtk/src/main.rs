@@ -118,6 +118,11 @@ fn open_file_flag_path() -> PathBuf {
     std::env::temp_dir().join("rakuos-software-open-file")
 }
 
+fn is_live_environment() -> bool {
+    std::env::var("USER").unwrap_or_default() == "liveuser"
+        || std::path::Path::new("/run/live").exists()
+}
+
 fn build_ui(app: &Application, start_hidden: bool) {
     let window = ApplicationWindow::builder()
         .application(app)
@@ -176,8 +181,11 @@ fn build_ui(app: &Application, start_hidden: bool) {
     let search_page_w = pages::search::build(Arc::clone(&nav_arc));
 
     // ── Hamburger menu ────────────────────────────────────────────────────
+    let live_env = is_live_environment();
     let menu_model = gtk4::gio::Menu::new();
-    menu_model.append(Some("System"), Some("win.show-system"));
+    if !live_env {
+        menu_model.append(Some("System"), Some("win.show-system"));
+    }
     menu_model.append(Some("Settings"), Some("win.show-settings"));
     menu_model.append(Some("About RakuOS Software"), Some("win.show-about"));
 
@@ -267,19 +275,22 @@ fn build_ui(app: &Application, start_hidden: bool) {
     });
 
     // ── Actions for hamburger menu ────────────────────────────────────────
-    let nav_sys = Arc::clone(&nav_arc);
-    let action_system = gtk4::gio::SimpleAction::new("show-system", None);
-    action_system.connect_activate(move |_, _| {
-        let page_w = pages::system::build();
-        let toolbar = libadwaita::ToolbarView::new();
-        toolbar.add_top_bar(&libadwaita::HeaderBar::new());
-        toolbar.set_content(Some(&page_w));
-        let nav_page = libadwaita::NavigationPage::builder()
-            .title("System")
-            .child(&toolbar)
-            .build();
-        nav_sys.push(&nav_page);
-    });
+    if !live_env {
+        let nav_sys = Arc::clone(&nav_arc);
+        let action_system = gtk4::gio::SimpleAction::new("show-system", None);
+        action_system.connect_activate(move |_, _| {
+            let page_w = pages::system::build();
+            let toolbar = libadwaita::ToolbarView::new();
+            toolbar.add_top_bar(&libadwaita::HeaderBar::new());
+            toolbar.set_content(Some(&page_w));
+            let nav_page = libadwaita::NavigationPage::builder()
+                .title("System")
+                .child(&toolbar)
+                .build();
+            nav_sys.push(&nav_page);
+        });
+        window.add_action(&action_system);
+    }
 
     let nav_set = Arc::clone(&nav_arc);
     let action_settings = gtk4::gio::SimpleAction::new("show-settings", None);
@@ -309,7 +320,6 @@ fn build_ui(app: &Application, start_hidden: bool) {
         dialog.present(Some(&win_about));
     });
 
-    window.add_action(&action_system);
     window.add_action(&action_settings);
     window.add_action(&action_about);
 

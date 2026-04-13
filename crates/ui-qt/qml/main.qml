@@ -34,6 +34,9 @@ ApplicationWindow {
 
     SoftwareBackend { id: backend }
 
+    // True when running in a live ISO session — hides the System page
+    property bool isLive: backend.isLiveEnvironment()
+
     // ── Cache readiness ───────────────────────────────────────────────────────
     property bool cacheReady: false
 
@@ -307,14 +310,19 @@ ApplicationWindow {
 
                         // ── Static nav buttons ──────────────────────────────────
                         Repeater {
-                            model: [
-                                { label: "🏠  Home",       page: 0 },
-                                { label: "📦  Installed",  page: 3 },
-                                { label: "🌐  Web Apps",   page: 8 },
-                                { label: "🔄  Updates",    page: 4 },
-                                { label: "⚙️   System",    page: 5 },
-                                { label: "🛠  Settings",   page: 6 },
-                            ]
+                            model: {
+                                var items = [
+                                    { label: "🏠  Home",       page: 0 },
+                                    { label: "📦  Installed",  page: 3 },
+                                    { label: "🌐  Web Apps",   page: 8 },
+                                    { label: "🔄  Updates",    page: 4 },
+                                    { label: "⚙️   System",    page: 5 },
+                                    { label: "🛠  Settings",   page: 6 },
+                                ];
+                                return root.isLive
+                                    ? items.filter(function(i) { return i.page !== 5; })
+                                    : items;
+                            }
                             delegate: Rectangle {
                                 width: parent.width
                                 height: 34
