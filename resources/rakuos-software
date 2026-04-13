@@ -8,23 +8,19 @@ WARMUP_FLAG="$CACHE_DIR/software-warmed"
 
 mkdir -p "$CACHE_DIR"
 
-run_backend() {
-    if [ -x "$LIBEXEC/rakuos-software-gtk" ]; then
-        "$LIBEXEC/rakuos-software-gtk" "$@"
-    elif [ -x "$LIBEXEC/rakuos-software-qt" ]; then
-        "$LIBEXEC/rakuos-software-qt" "$@"
-    else
-        echo "rakuos-software: no frontend installed (expected gtk or qt in $LIBEXEC)" >&2
-        exit 1
-    fi
-}
-
 # --- warmup only if not already done ---
 if [ ! -f "$WARMUP_FLAG" ]; then
     touch "$WARMUP_FLAG"
 
     # warmup run (fire and forget)
-    run_backend "$@" &
+    if [ -x "$LIBEXEC/rakuos-software-gtk" ]; then
+        "$LIBEXEC/rakuos-software-gtk" "$@" &
+    elif [ -x "$LIBEXEC/rakuos-software-qt" ]; then
+        "$LIBEXEC/rakuos-software-qt" "$@" &
+    else
+        echo "rakuos-software: no frontend installed (expected gtk or qt in $LIBEXEC)" >&2
+        exit 1
+    fi
     WARMUP_PID=$!
 
     # give it just enough time to initialize
@@ -37,4 +33,11 @@ if [ ! -f "$WARMUP_FLAG" ]; then
 fi
 
 # --- normal run (always exactly once) ---
-run_backend "$@"
+if [ -x "$LIBEXEC/rakuos-software-gtk" ]; then
+    exec "$LIBEXEC/rakuos-software-gtk" "$@"
+elif [ -x "$LIBEXEC/rakuos-software-qt" ]; then
+    exec "$LIBEXEC/rakuos-software-qt" "$@"
+else
+    echo "rakuos-software: no frontend installed (expected gtk or qt in $LIBEXEC)" >&2
+    exit 1
+fi
