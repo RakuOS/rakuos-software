@@ -24,7 +24,7 @@ if [ ! -f "$WARMUP_FLAG" ]; then
     touch "$WARMUP_FLAG"
 
     # warmup run (fire and forget)
-    run_backend --warmup "$@" &
+    run_backend "$@" &
     WARMUP_PID=$!
 
     # give it just enough time to initialize
