@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # RakuOS Software launcher — auto-detects installed GTK or Qt frontend.
-# Passes all arguments through (e.g. --tray for background/autostart mode).
 
 LIBEXEC=/usr/libexec/rakuos/software
 
@@ -11,30 +10,31 @@ mkdir -p "$CACHE_DIR"
 
 run_backend() {
     if [ -x "$LIBEXEC/rakuos-software-gtk" ]; then
-        exec "$LIBEXEC/rakuos-software-gtk" "$@"
+        "$LIBEXEC/rakuos-software-gtk" "$@"
     elif [ -x "$LIBEXEC/rakuos-software-qt" ]; then
-        exec "$LIBEXEC/rakuos-software-qt" "$@"
+        "$LIBEXEC/rakuos-software-qt" "$@"
     else
         echo "rakuos-software: no frontend installed (expected gtk or qt in $LIBEXEC)" >&2
         exit 1
     fi
 }
 
-# --- First-run warmup fix (temporary hack) ---
+# --- warmup only if not already done ---
 if [ ! -f "$WARMUP_FLAG" ]; then
     touch "$WARMUP_FLAG"
 
+    # warmup run (fire and forget)
     run_backend --warmup "$@" &
-    APP_PID=$!
+    WARMUP_PID=$!
 
-    # give app time to initialize caches / appstream / dbus
+    # give it just enough time to initialize
     sleep 3
 
-    kill "$APP_PID" 2>/dev/null
-
-    # small buffer before real launch
-    sleep 1
+    # kill warmup backend + tray immediately
+    kill "$WARMUP_PID" 2>/dev/null
+    pkill -x rakuos-software-tray 2>/dev/null
+    sleep 3
 fi
 
-# --- normal execution path (unchanged behavior) ---
+# --- normal run (always exactly once) ---
 run_backend "$@"
