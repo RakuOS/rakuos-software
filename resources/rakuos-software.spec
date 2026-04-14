@@ -1,7 +1,7 @@
 %global app_id org.rakuos.Software
 %global electron_dir /usr/lib/rakuos-electron
 %global electron_webapp_dir /usr/lib/rakuos-electron-webapp
-%global ecs_version v40.7.0+wvcus
+%global ecs_version v41.1.1+wvcus
 
 Name:           rakuos-software
 Version:        1.0.0
@@ -11,7 +11,7 @@ License:        GPL-3.0-or-later
 URL:            https://rakuos.org
 Source0:        https://github.com/RakuOS/rakuos-software/archive/refs/heads/main/%{name}-main.tar.gz
 # castlabs Electron with Widevine hooks (ECS)
-Source1:        https://github.com/castlabs/electron-releases/releases/download/v40.7.0%%2Bwvcus/electron-v40.7.0+wvcus-linux-x64.zip
+Source1:        https://github.com/castlabs/electron-releases/releases/download/v41.1.1%%2Bwvcus/electron-v41.1.1+wvcus-linux-x64.zip
 # Google Chrome RPM — used only to extract WidevineCDM at build time
 Source2:        https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
 
