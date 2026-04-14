@@ -8,6 +8,6 @@
   "icon": "rakuos_community.png",
   "icon_url": "https://rakuos.org/themes/raku/assets/images/rakuos-logo-sprite.png",
   "custom_css": "",
-  "categories": ["Networking", "InstantMessaging"],
+  "categories": ["Network", "InstantMessaging"],
   "keywords": ["rakuos", "linux", "community", "chat", "matrix"]
 }
