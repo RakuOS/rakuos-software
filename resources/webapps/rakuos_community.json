@@ -1,6 +1,6 @@
 {
   "id": "rakuos_community",
-  "name": "Rakuos Community Chat",
+  "name": "Rakuos Chat",
   "url": "https://rakuos.org/",
   "website": "https://community.rakuos.org/",
   "summary": "Rakuos Linux Community is a space for Rakuos Linux users, contributors, and developers to connect, share knowledge, and contribute to community powered by matrix.",
@@ -8,6 +8,6 @@
   "icon": "rakuos_community.png",
   "icon_url": "https://rakuos.org/themes/raku/assets/images/rakuos-logo-sprite.png",
   "custom_css": "",
-  "categories": ["Internet"],
+  "categories": ["Networking", "InstantMessaging", "Chat"],
   "keywords": ["rakuos", "linux", "community", "chat", "matrix"]
 }
