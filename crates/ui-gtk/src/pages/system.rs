@@ -50,6 +50,35 @@ fn branch_label_from_tag(tag: &str) -> &'static str {
     }
 }
 
+fn selected_image_differs(current_image: &str, de_idx: usize, branch_idx: usize) -> bool {
+    if current_image.is_empty() {
+        return false;
+    }
+
+    let Some(&(_, de_id)) = DE_LABELS.get(de_idx) else {
+        return false;
+    };
+    let Some(&(_, branch_tag)) = BRANCH_LABELS.get(branch_idx) else {
+        return false;
+    };
+
+    let (name, current_tag, is_nvidia) = parse_image_ref(current_image);
+    let current_base = name.trim_end_matches("-nvidia");
+    let selected_name = if is_nvidia {
+        format!("{}-nvidia", de_id)
+    } else {
+        de_id.to_string()
+    };
+
+    let branch_matches = if branch_tag == "staging" {
+        current_tag.starts_with("staging")
+    } else {
+        !current_tag.starts_with("staging")
+    };
+
+    selected_name != name || current_base != de_id || !branch_matches
+}
+
 fn stream_succeeded<I>(stream: I) -> bool
 where
     I: Iterator<Item = String>,
@@ -179,6 +208,7 @@ pub fn build() -> Widget {
     let switch_btn = Button::builder()
         .label("Switch Image")
         .css_classes(vec!["pill".to_string()])
+        .sensitive(false)
         .build();
     let switch_status_lbl = Label::builder()
         .halign(Align::Start)
@@ -394,6 +424,41 @@ pub fn build() -> Widget {
     // ── Wire Image Switch ────────────────────────────────────────────────────
     // current_image shared state populated after load
     let current_image_state: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let syncing_switch_controls: Rc<RefCell<bool>> = Rc::new(RefCell::new(true));
+    {
+        let img_state = Rc::clone(&current_image_state);
+        let sync_state = Rc::clone(&syncing_switch_controls);
+        let branch_combo_c = branch_combo.clone();
+        let switch_btn_c = switch_btn.clone();
+        de_combo.connect_selected_notify(move |combo| {
+            if *sync_state.borrow() {
+                return;
+            }
+            let enabled = selected_image_differs(
+                &img_state.borrow(),
+                combo.selected() as usize,
+                branch_combo_c.selected() as usize,
+            );
+            switch_btn_c.set_sensitive(enabled);
+        });
+    }
+    {
+        let img_state = Rc::clone(&current_image_state);
+        let sync_state = Rc::clone(&syncing_switch_controls);
+        let de_combo_c = de_combo.clone();
+        let switch_btn_c = switch_btn.clone();
+        branch_combo.connect_selected_notify(move |combo| {
+            if *sync_state.borrow() {
+                return;
+            }
+            let enabled = selected_image_differs(
+                &img_state.borrow(),
+                de_combo_c.selected() as usize,
+                combo.selected() as usize,
+            );
+            switch_btn_c.set_sensitive(enabled);
+        });
+    }
     {
         let img_state = Rc::clone(&current_image_state);
         let combo_c   = de_combo.clone();
@@ -454,11 +519,14 @@ pub fn build() -> Widget {
         });
 
         let img_state = Rc::clone(&current_image_state);
+        let sync_state = Rc::clone(&syncing_switch_controls);
+        let switch_btn_c = switch_btn.clone();
 
         glib::timeout_add_local(Duration::from_millis(80), move || {
             match rx.try_recv() {
                 Ok((status, overlay)) => {
                     img_state.replace(status.image.clone());
+                    *sync_state.borrow_mut() = true;
 
                     image_row.set_subtitle(if status.image.is_empty() { "Unknown" } else { &status.image });
                     version_row.set_subtitle(if status.version.is_empty() { "Unknown" } else { &status.version });
@@ -482,6 +550,8 @@ pub fn build() -> Widget {
                     }) {
                         branch_combo.set_selected(idx as u32);
                     }
+                    switch_btn_c.set_sensitive(false);
+                    *sync_state.borrow_mut() = false;
                     current_de_row.set_subtitle(&de_label_from_image(&status.image));
                     current_branch_row.set_subtitle(branch_label_from_tag(&tag));
 
