@@ -8,12 +8,16 @@ use std::process::Command;
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-fn catalog_dir() -> PathBuf {
-    PathBuf::from("/usr/share/rakuos/webapps")
-}
-
 fn install_dir() -> PathBuf {
     dirs_base().join(".local/share/rakuos/webapps")
+}
+
+fn cache_dir() -> PathBuf {
+    dirs_base().join(".cache/rakuos/webapps")
+}
+
+fn catalog_cache_dir() -> PathBuf {
+    cache_dir().join("catalog")
 }
 
 fn icon_dir() -> PathBuf {
@@ -29,6 +33,7 @@ fn dirs_base() -> PathBuf {
 }
 
 const DESKTOP_PREFIX: &str = "rakuos-webapp-";
+const CATALOG_INDEX_URL: &str = "https://rakuos.org/api/webapps";
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -48,6 +53,7 @@ pub struct WebApp {
     #[serde(default)] pub custom_css: String,
     #[serde(default)] pub session_group: String,
     #[serde(default)] pub mimetypes: Vec<String>,
+    #[serde(default)] pub last_updated: String,
     #[serde(default)] pub source: String,
     #[serde(default)] pub installed: bool,
 }
@@ -69,35 +75,85 @@ impl Default for WebApp {
             custom_css: String::new(),
             session_group: String::new(),
             mimetypes: Vec::new(),
+            last_updated: String::new(),
             source: "webapp".to_string(),
             installed: false,
         }
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct CatalogIndexResponse {
+    webapps: Vec<CatalogIndexEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogIndexEntry {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    slug: String,
+    #[serde(default)]
+    last_updated: String,
+    #[serde(default)]
+    detail_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogDetailResponse {
+    webapp: serde_json::Value,
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Return all web apps from the system catalog.
+/// Return all web apps from the remote RakuOS catalog API.
 pub fn get_catalog() -> Vec<WebApp> {
     let mut apps = Vec::new();
-    let catalog = catalog_dir();
-    if !catalog.exists() {
-        return apps;
-    }
-    let Ok(entries) = std::fs::read_dir(&catalog) else { return apps };
-    let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-    paths.sort();
-    for path in paths {
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+
+    let Ok(index): Result<CatalogIndexResponse, _> = fetch_json(CATALOG_INDEX_URL) else {
+        return load_cached_catalog();
+    };
+
+    for entry in index.webapps {
+        if entry.detail_url.is_empty() {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else { continue };
-        let Ok(data): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
-            continue
+
+        let app_id = cache_id_for_entry(&entry);
+        let cached = load_cached_detail(&app_id);
+
+        let detail_json = if let Some(cached_json) = cached.as_ref() {
+            if cached_last_updated(cached_json) == entry.last_updated {
+                Some(cached_json.clone())
+            } else {
+                match fetch_json::<CatalogDetailResponse>(&entry.detail_url) {
+                    Ok(detail) => {
+                        store_cached_detail(&app_id, &detail.webapp);
+                        Some(detail.webapp)
+                    }
+                    Err(_) => Some(cached_json.clone()),
+                }
+            }
+        } else {
+            match fetch_json::<CatalogDetailResponse>(&entry.detail_url) {
+                Ok(detail) => {
+                    store_cached_detail(&app_id, &detail.webapp);
+                    Some(detail.webapp)
+                }
+                Err(_) => None,
+            }
         };
-        apps.extend(expand_catalog_data(&data));
+
+        if let Some(detail) = detail_json {
+            apps.extend(expand_catalog_data(&detail));
+        }
     }
-    apps
+
+    if apps.is_empty() {
+        load_cached_catalog()
+    } else {
+        apps
+    }
 }
 
 /// Return all installed web apps.
@@ -171,6 +227,7 @@ pub fn install(app_id: &str) -> (bool, String) {
         "custom_css": app.custom_css,
         "session_group": app.session_group,
         "mimetypes": app.mimetypes,
+        "last_updated": app.last_updated,
         "source": "webapp",
         "installed": true,
     });
@@ -278,6 +335,7 @@ pub fn install_custom(
         "custom_css":   "",
         "session_group": "",
         "mimetypes":    [],
+        "last_updated": "",
         "source":       "webapp",
         "installed":    true,
     });
@@ -404,6 +462,7 @@ fn parse_webapp(
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
+        last_updated: v["last_updated"].as_str().unwrap_or("").to_string(),
         mimetypes: v["mimetypes"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -444,6 +503,70 @@ fn finalise(mut app: WebApp) -> WebApp {
     app
 }
 
+fn cache_id_for_entry(entry: &CatalogIndexEntry) -> String {
+    if !entry.id.is_empty() {
+        entry.id.clone()
+    } else if !entry.slug.is_empty() {
+        entry.slug.clone()
+    } else {
+        entry.detail_url
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+}
+
+fn cache_file_path(app_id: &str) -> PathBuf {
+    catalog_cache_dir().join(format!("{}.json", app_id))
+}
+
+fn load_cached_catalog() -> Vec<WebApp> {
+    let mut apps = Vec::new();
+    let dir = catalog_cache_dir();
+
+    if !dir.exists() {
+        return apps;
+    }
+
+    let Ok(entries) = std::fs::read_dir(&dir) else { return apps };
+    let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+
+    for path in paths {
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let Ok(data): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
+            continue
+        };
+
+        apps.extend(expand_catalog_data(&data));
+    }
+
+    apps
+}
+
+fn load_cached_detail(app_id: &str) -> Option<serde_json::Value> {
+    let path = cache_file_path(app_id);
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn store_cached_detail(app_id: &str, detail: &serde_json::Value) {
+    let _ = std::fs::create_dir_all(catalog_cache_dir());
+    let _ = std::fs::write(
+        cache_file_path(app_id),
+        serde_json::to_string_pretty(detail).unwrap_or_default(),
+    );
+}
+
+fn cached_last_updated(detail: &serde_json::Value) -> String {
+    detail["last_updated"].as_str().unwrap_or("").to_string()
+}
+
 fn resolve_icon(app: &WebApp) -> String {
     let ext = "png";
     let cached = icon_dir().join(format!("{}.{}", app.id, ext));
@@ -469,8 +592,14 @@ fn download_bytes(url: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
+fn fetch_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
+    let bytes = download_bytes(url)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn ensure_dirs() -> Result<()> {
     std::fs::create_dir_all(install_dir())?;
+    std::fs::create_dir_all(catalog_cache_dir())?;
     std::fs::create_dir_all(icon_dir())?;
     std::fs::create_dir_all(desktop_dir())?;
     Ok(())

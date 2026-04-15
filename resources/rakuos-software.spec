@@ -115,11 +115,6 @@ install -m644 resources/rakuos-electron-webapp/main.js \
 install -m644 resources/rakuos-electron-webapp/package.json \
     %{buildroot}%{electron_webapp_dir}/
 
-# Web app catalog
-install -dm755 %{buildroot}%{_datadir}/rakuos/webapps
-install -m644 resources/webapps/*.json \
-    %{buildroot}%{_datadir}/rakuos/webapps/
-
 # AppStream overrides and data
 install -dm755 %{buildroot}%{_datadir}/rakuos/appstream
 install -m644 resources/appstream/appstream-overrides.json \
