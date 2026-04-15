@@ -20,21 +20,34 @@ const DE_LABELS: &[(&str, &str)] = &[
     ("COSMIC",     "rakuos-cosmic"),
 ];
 
-fn parse_image_name(image: &str) -> (String, bool) {
-    // "ghcr.io/owner/rakuos-kde-nvidia:20240101" → ("rakuos-kde-nvidia", true)
-    let name = image.split(':').next().unwrap_or("").split('/').last().unwrap_or("").to_string();
+const BRANCH_LABELS: &[(&str, &str)] = &[
+    ("Stable", "latest"),
+    ("Staging", "staging"),
+];
+
+fn parse_image_ref(image: &str) -> (String, String, bool) {
+    let (image_path, tag) = image.rsplit_once(':').unwrap_or((image, ""));
+    let name = image_path.split('/').last().unwrap_or("").to_string();
     let is_nvidia = name.ends_with("-nvidia");
-    (name, is_nvidia)
+    (name, tag.to_string(), is_nvidia)
 }
 
 fn de_label_from_image(image: &str) -> String {
-    let (name, is_nvidia) = parse_image_name(image);
+    let (name, _, is_nvidia) = parse_image_ref(image);
     let base = name.trim_end_matches("-nvidia");
     let label = DE_LABELS.iter()
         .find(|(_, id)| *id == base)
         .map(|(lbl, _)| *lbl)
         .unwrap_or(base);
     if is_nvidia { format!("{} (Nvidia)", label) } else { label.to_string() }
+}
+
+fn branch_label_from_tag(tag: &str) -> &'static str {
+    if tag.starts_with("staging") {
+        "Staging"
+    } else {
+        "Stable"
+    }
 }
 
 pub fn build() -> Widget {
@@ -117,7 +130,12 @@ pub fn build() -> Widget {
         .title("Current")
         .subtitle("Loading…")
         .build();
+    let current_branch_row = ActionRow::builder()
+        .title("Branch")
+        .subtitle("Loading…")
+        .build();
     de_group.add(&current_de_row);
+    de_group.add(&current_branch_row);
 
     let de_switch_row = GBox::builder()
         .orientation(Orientation::Horizontal)
@@ -136,8 +154,13 @@ pub fn build() -> Widget {
         .model(&de_list)
         .hexpand(true)
         .build();
+    let branch_list = StringList::new(&BRANCH_LABELS.iter().map(|(l, _)| *l).collect::<Vec<_>>());
+    let branch_combo = DropDown::builder()
+        .model(&branch_list)
+        .hexpand(true)
+        .build();
     let switch_btn = Button::builder()
-        .label("Switch DE")
+        .label("Switch Image")
         .css_classes(vec!["pill".to_string()])
         .build();
     let switch_status_lbl = Label::builder()
@@ -148,6 +171,7 @@ pub fn build() -> Widget {
 
     de_switch_row.append(&de_lbl);
     de_switch_row.append(&de_combo);
+    de_switch_row.append(&branch_combo);
     de_switch_row.append(&switch_btn);
     de_switch_row.append(&switch_status_lbl);
     de_group.add(&de_switch_row);
@@ -356,6 +380,7 @@ pub fn build() -> Widget {
     {
         let img_state = Rc::clone(&current_image_state);
         let combo_c   = de_combo.clone();
+        let branch_c  = branch_combo.clone();
         let status_c  = switch_status_lbl.clone();
         let switch_c  = switch_btn.clone();
         let reboot_c  = img_reboot_btn.clone();
@@ -364,17 +389,19 @@ pub fn build() -> Widget {
             let img = img_state.borrow().clone();
             if img.is_empty() { return; }
             let idx = combo_c.selected() as usize;
+            let branch_idx = branch_c.selected() as usize;
             let Some(&(_, de_id)) = DE_LABELS.get(idx) else { return; };
-            let (_, is_nvidia) = parse_image_name(&img);
+            let Some(&(branch_label, branch_tag)) = BRANCH_LABELS.get(branch_idx) else { return; };
+            let (_, _, is_nvidia) = parse_image_ref(&img);
             let new_name = if is_nvidia { format!("{}-nvidia", de_id) } else { de_id.to_string() };
             // Derive base repo URL: strip everything from last '/' before ':'
             let base = img.split(':').next().unwrap_or("");
             let repo_base = base.rsplitn(2, '/').nth(1).unwrap_or(base);
-            let target = format!("{}/{}:latest", repo_base, new_name);
+            let target = format!("{}/{}:{}", repo_base, new_name, branch_tag);
 
             btn.set_sensitive(false);
             btn.set_label("Switching…");
-            status_c.set_label(&format!("Switching to {}…", de_id));
+            status_c.set_label(&format!("Switching to {} on {}…", de_id, branch_label));
             status_c.set_visible(true);
 
             let (tx, rx) = mpsc::channel::<()>();
@@ -390,7 +417,7 @@ pub fn build() -> Widget {
             glib::timeout_add_local(Duration::from_millis(50), move || {
                 match rx.try_recv() {
                     Ok(_) => {
-                        btn_c.set_label("Switch DE");
+                        btn_c.set_label("Switch Image");
                         btn_c.set_sensitive(true);
                         reboot_r.set_visible(true);
                         status_r.set_label("Switch staged — reboot to apply.");
@@ -442,16 +469,22 @@ pub fn build() -> Widget {
                         format!("{}…", &status.digest[..status.digest.len().min(24)])
                     }.as_str());
                     timestamp_row.set_subtitle(if status.timestamp.is_empty() { "Unknown" } else { &status.timestamp });
-                    let (_, is_nvidia) = parse_image_name(&status.image);
+                    let (_, tag, is_nvidia) = parse_image_ref(&status.image);
                     nvidia_row.set_subtitle(if is_nvidia { "Yes" } else { "No" });
 
                     // Set DE combo to current DE
-                    let (name, _) = parse_image_name(&status.image);
+                    let (name, _, _) = parse_image_ref(&status.image);
                     let base = name.trim_end_matches("-nvidia");
                     if let Some(idx) = DE_LABELS.iter().position(|(_, id)| *id == base) {
                         de_combo.set_selected(idx as u32);
                     }
+                    if let Some(idx) = BRANCH_LABELS.iter().position(|(_, branch_tag)| {
+                        if *branch_tag == "staging" { tag.starts_with("staging") } else { !tag.starts_with("staging") }
+                    }) {
+                        branch_combo.set_selected(idx as u32);
+                    }
                     current_de_row.set_subtitle(&de_label_from_image(&status.image));
+                    current_branch_row.set_subtitle(branch_label_from_tag(&tag));
 
                     // Overlay packages
                     overlay_count_lbl.set_label(&format!(

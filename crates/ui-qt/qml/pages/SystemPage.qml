@@ -21,6 +21,10 @@ Item {
         { label: "GNOME",      image_name: "rakuos-gnome"  },
         { label: "COSMIC",     image_name: "rakuos-cosmic" },
     ]
+    property var branchImages: [
+        { label: "Stable", tag: "latest" },
+        { label: "Staging", tag: "staging" },
+    ]
 
     function activate() {
         if (statusData === null) loadStatus();
@@ -85,12 +89,13 @@ Item {
     }
 
     // ── Parse image name helper ───────────────────────────────────────────────
-    function parseImageName(imageRef) {
-        if (!imageRef) return { name: "", isNvidia: false };
+    function parseImageRef(imageRef) {
+        if (!imageRef) return { name: "", tag: "", isNvidia: false };
         var parts = imageRef.split(":");
+        var tag = parts.length > 1 ? parts[parts.length - 1] : "";
         var path = (parts[0] || "").replace("ghcr.io/", "").replace("docker.io/", "");
         var name = path.split("/").pop();
-        return { name: name, isNvidia: name.endsWith("-nvidia") };
+        return { name: name, tag: tag, isNvidia: name.endsWith("-nvidia") };
     }
 
     function currentDELabel(imageName) {
@@ -99,6 +104,10 @@ Item {
             if (deImages[i].image_name === base) return deImages[i].label;
         }
         return imageName;
+    }
+
+    function currentBranchLabel(tag) {
+        return tag && tag.indexOf("staging") === 0 ? "Staging" : "Stable";
     }
 
 
@@ -187,7 +196,7 @@ Item {
                         model: {
                             if (!statusData) return [];
                             var img = statusData.image || "";
-                            var parsed = parseImageName(img);
+                            var parsed = parseImageRef(img);
                             return [
                                 { label: "Image",     value: img || "—" },
                                 { label: "Version",   value: statusData.version   || "—" },
@@ -294,9 +303,25 @@ Item {
                         Label {
                             text: {
                                 if (!statusData) return "—";
-                                var parsed = parseImageName(statusData.image || "");
+                                var parsed = parseImageRef(statusData.image || "");
                                 var lbl = currentDELabel(parsed.name);
                                 return lbl + (parsed.isNvidia ? " (Nvidia)" : "");
+                            }
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 12
+
+                        Label { text: "Branch:"; color: root.dimText; font.pixelSize: 12; Layout.preferredWidth: 80 }
+                        Label {
+                            text: {
+                                if (!statusData) return "—";
+                                var parsed = parseImageRef(statusData.image || "");
+                                return currentBranchLabel(parsed.tag);
                             }
                             font.pixelSize: 12
                             font.bold: true
@@ -313,23 +338,48 @@ Item {
                             id: deCombo
                             model: systemPage.deImages.map(function(d) { return d.label; })
                             width: 200
+                            currentIndex: {
+                                if (!statusData) return 0;
+                                var parsed = parseImageRef(statusData.image || "");
+                                var base = parsed.name.replace("-nvidia", "");
+                                for (var i = 0; i < systemPage.deImages.length; i++) {
+                                    if (systemPage.deImages[i].image_name === base) return i;
+                                }
+                                return 0;
+                            }
+                        }
+
+                        ComboBox {
+                            id: branchCombo
+                            model: systemPage.branchImages.map(function(b) { return b.label; })
+                            width: 140
+                            currentIndex: {
+                                if (!statusData) return 0;
+                                var parsed = parseImageRef(statusData.image || "");
+                                return currentBranchLabel(parsed.tag) === "Staging" ? 1 : 0;
+                            }
                         }
 
                         Button {
                             id: switchBtn
-                            text: "Switch DE"
+                            text: "Switch Image"
                             enabled: {
                                 if (!statusData) return false;
-                                var parsed = parseImageName(statusData.image || "");
+                                var parsed = parseImageRef(statusData.image || "");
                                 var base = parsed.name.replace("-nvidia", "");
                                 var selected = systemPage.deImages[deCombo.currentIndex];
-                                return selected && selected.image_name !== base;
+                                var selectedBranch = systemPage.branchImages[branchCombo.currentIndex];
+                                var currentBranch = currentBranchLabel(parsed.tag);
+                                return selected && selectedBranch &&
+                                       (selected.image_name !== base || selectedBranch.label !== currentBranch);
                             }
                             onClicked: {
                                 if (!statusData) return;
                                 var selected = systemPage.deImages[deCombo.currentIndex];
+                                var selectedBranch = systemPage.branchImages[branchCombo.currentIndex];
                                 if (!selected) return;
-                                var parsed = parseImageName(statusData.image || "");
+                                if (!selectedBranch) return;
+                                var parsed = parseImageRef(statusData.image || "");
                                 var isNvidia = parsed.isNvidia;
                                 var newName = selected.image_name + (isNvidia ? "-nvidia" : "");
                                 // Derive repo_url from current image (strip image name, replace)
@@ -339,10 +389,10 @@ Item {
                                 var slashIdx = baseUrl.lastIndexOf("/");
                                 var repoBase = slashIdx > 0 ? baseUrl.substring(0, slashIdx) : baseUrl;
                                 var newRepoUrl = repoBase + "/" + newName;
-                                backend.upgradeImage("switch", newRepoUrl, "latest");
+                                backend.upgradeImage("switch", newRepoUrl, selectedBranch.tag);
                                 systemPage.upgrading = true;
                                 upgradePollTimer.start();
-                                switchStatus.text = "Switching to " + selected.label + "…";
+                                switchStatus.text = "Switching to " + selected.label + " on " + selectedBranch.label + "…";
                                 switchStatus.color = root.dimText;
                             }
                         }
