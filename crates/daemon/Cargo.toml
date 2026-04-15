@@ -20,6 +20,7 @@ rakuos-updates  = { workspace = true }
 rakuos-flatpak  = { workspace = true }
 rakuos-packages = { workspace = true }
 rakuos-appimages = { workspace = true }
+rakuos-webapps = { workspace = true }
 
 # System tray via D-Bus StatusNotifierItem (KDE + GNOME AppIndicator)
 ksni = "0.2"

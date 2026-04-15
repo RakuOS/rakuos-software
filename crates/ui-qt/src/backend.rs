@@ -517,16 +517,23 @@ pub struct SoftwareBackend {
                 .filter_map(|f| serde_json::to_value(f).ok())
                 .collect();
 
+            let webapp_updates: Vec<serde_json::Value> = rakuos_webapps::get_updates()
+                .into_iter()
+                .filter_map(|w| serde_json::to_value(w).ok())
+                .collect();
+
             // Check image update — also detects staged images waiting for reboot.
             let (image_available, image_info) = rakuos_updates::check_image_script();
             let reboot_required = image_info["reboot_required"].as_bool().unwrap_or(false);
 
             let total = pkg_updates.len() + fp_updates.len()
+                + webapp_updates.len()
                 + if image_available { 1 } else { 0 };
 
             let result = serde_json::json!({
                 "packages":        pkg_updates,
                 "flatpak":         fp_updates,
+                "webapps":         webapp_updates,
                 "appimages":       [],
                 "image_available": image_available,
                 "reboot_required": reboot_required,
@@ -644,6 +651,39 @@ pub struct SoftwareBackend {
                 }
             }
             shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
+    updateWebApp: qt_method!(fn updateWebApp(&mut self, id: QString) {
+        let id = id.to_string();
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let _ = std::fs::write(log_path(), format!("Updating web app {}...\n", id));
+            let ok = if id == "__all__" {
+                let mut all_ok = true;
+                for app in rakuos_webapps::get_updates() {
+                    let (app_ok, msg) = rakuos_webapps::update(&app.id);
+                    if !msg.is_empty() {
+                        append_log(&msg);
+                    }
+                    if !app_ok {
+                        all_ok = false;
+                    }
+                }
+                all_ok
+            } else {
+                let (ok, msg) = rakuos_webapps::update(&id);
+                if !msg.is_empty() {
+                    append_log(&msg);
+                }
+                ok
+            };
+            if ok {
+                append_log("Web app update complete.");
+            }
+            shared.result.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
             shared.running.store(false, Ordering::Relaxed);
         });
     }),

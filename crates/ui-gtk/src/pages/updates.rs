@@ -41,6 +41,7 @@ fn parse_dnf_progress(line: &str) -> Option<f64> {
 use rakuos_flatpak::FlatpakUpdate;
 use rakuos_updates::UpdateInfo;
 use rakuos_appstream;
+use rakuos_webapps::WebAppUpdate;
 
 // ── Shared operation state ────────────────────────────────────────────────────
 
@@ -306,7 +307,7 @@ fn load_updates(
     update_all_btn: Button,
     reboot_btn:     Button,
 ) {
-    type CheckResult = (UpdateInfo, Vec<serde_json::Value>, Vec<FlatpakUpdate>);
+    type CheckResult = (UpdateInfo, Vec<serde_json::Value>, Vec<FlatpakUpdate>, Vec<WebAppUpdate>);
     let (tx, rx) = mpsc::channel::<CheckResult>();
 
     std::thread::spawn(move || {
@@ -340,6 +341,7 @@ fn load_updates(
         }).collect();
         drop(appstream);
         let flatpaks = rakuos_flatpak::get_all_updates();
+        let webapps = rakuos_webapps::get_updates();
         let (image_available, image_json) = rakuos_updates::check_image_script();
         let reboot_required = image_json["reboot_required"].as_bool().unwrap_or(false);
         let system = UpdateInfo {
@@ -353,11 +355,12 @@ fn load_updates(
         };
 
         // Write daemon cache in the same format the daemon uses
-        let total = (if system.available { 1 } else { 0 }) + packages.len() + flatpaks.len();
+        let total = (if system.available { 1 } else { 0 }) + packages.len() + flatpaks.len() + webapps.len();
         let cache = serde_json::json!({
             "total":           total,
             "packages":        packages,
             "flatpak":         serde_json::to_value(&flatpaks).unwrap_or_default(),
+            "webapps":         serde_json::to_value(&webapps).unwrap_or_default(),
             "appimages":       [],
             "image_available": system.available,
             "reboot_required": reboot_required,
@@ -371,12 +374,12 @@ fn load_updates(
         }
         let _ = std::fs::write(&cache_path, serde_json::to_string_pretty(&cache).unwrap_or_default());
 
-        let _ = tx.send((system, packages, flatpaks));
+        let _ = tx.send((system, packages, flatpaks, webapps));
     });
 
     glib::timeout_add_local(Duration::from_millis(80), move || {
         match rx.try_recv() {
-            Ok((system, packages, flatpaks)) => {
+            Ok((system, packages, flatpaks, webapps)) => {
                 spinner.set_spinning(false);
                 spinner.set_visible(false);
                 busy.set_spinning(false);
@@ -400,6 +403,7 @@ fn load_updates(
                 let has_pkgs       = !packages.is_empty();
                 let has_apps       = !apps.is_empty();
                 let has_runtimes   = !runtimes.is_empty();
+                let has_webapps    = !webapps.is_empty();
 
                 // If a staged image is waiting for reboot, show reboot button immediately.
                 if reboot_pending {
@@ -407,7 +411,7 @@ fn load_updates(
                     reboot_btn.set_visible(true);
                 }
 
-                if !has_image && !reboot_pending && !has_pkgs && !has_apps && !has_runtimes {
+                if !has_image && !reboot_pending && !has_pkgs && !has_apps && !has_runtimes && !has_webapps {
                     status_lbl.set_label("Your system is up to date");
                     let sp = libadwaita::StatusPage::builder()
                         .title("Up to Date")
@@ -416,7 +420,7 @@ fn load_updates(
                         .build();
                     content.append(&sp);
                 } else {
-                    let count = (if has_image { 1 } else { 0 }) + packages.len() + flatpaks.len();
+                    let count = (if has_image { 1 } else { 0 }) + packages.len() + flatpaks.len() + webapps.len();
                     status_lbl.set_label(&format!(
                         "{} update{} available",
                         count,
@@ -444,6 +448,10 @@ fn load_updates(
                         content.append(&build_apps_section(&gui_pkgs, &apps, state.clone(), status_lbl.clone()));
                     }
 
+                    if has_webapps {
+                        content.append(&build_webapps_section(&webapps, state.clone(), status_lbl.clone()));
+                    }
+
                     // Overlay Dependencies: non-gui RPM packages
                     if has_dep_pkgs {
                         content.append(&build_packages_section("Overlay Dependencies", &dep_pkgs, state.clone(), status_lbl.clone()));
@@ -460,6 +468,7 @@ fn load_updates(
                     let do_image  = system.available;
                     let do_pkgs   = has_pkgs;  // upgrade_packages_stream handles all overlay pkgs
                     let all_fps   = flatpaks.clone();
+                    let all_webapps = webapps.clone();
                     let state_a   = state.clone();
                     let status_a  = status_lbl.clone();
                     let upd_btn   = update_all_btn.clone();
@@ -475,6 +484,7 @@ fn load_updates(
                         let repo   = sys_repo.clone();
                         let tag    = sys_tag.clone();
                         let fps    = all_fps.clone();
+                        let webapps = all_webapps.clone();
                         let do_img = do_image;
                         let do_pkg = do_pkgs;
                         let (tx2, rx2) = mpsc::channel::<bool>();
@@ -489,6 +499,9 @@ fn load_updates(
                             for fp in &fps {
                                 let id = fp.app_id.clone();
                                 let _: Vec<_> = rakuos_flatpak::update_single_stream(&id).collect();
+                            }
+                            for webapp in &webapps {
+                                let _ = rakuos_webapps::update(&webapp.id);
                             }
                             let _ = tx2.send(do_img);
                         });
@@ -1196,6 +1209,217 @@ fn build_apps_section(
                 }
                 Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
                 Err(_) => { state_r.stop(); glib::ControlFlow::Break }
+            }
+        });
+    });
+
+    card.upcast()
+}
+
+fn build_webapps_section(
+    webapps: &[WebAppUpdate],
+    state: UpdateState,
+    status_lbl: Label,
+) -> Widget {
+    let card = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(0)
+        .css_classes(vec!["card".to_string()])
+        .build();
+
+    let header = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(12).margin_bottom(8)
+        .margin_start(12).margin_end(12)
+        .build();
+    header.append(&Label::builder()
+        .label("Web Apps")
+        .halign(Align::Start).hexpand(true)
+        .css_classes(vec!["heading".to_string()])
+        .build());
+    header.append(&Label::builder()
+        .label(&format!("{} update{}", webapps.len(), if webapps.len() == 1 { "" } else { "s" }))
+        .halign(Align::End)
+        .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
+        .build());
+
+    let update_all_btn = Button::builder()
+        .label("Update All")
+        .valign(Align::Center)
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+    header.append(&update_all_btn);
+    card.append(&header);
+    card.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+    let remaining = Rc::new(Cell::new(webapps.len()));
+
+    for app in webapps {
+        let app_row = GBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(4)
+            .build();
+
+        let row = GBox::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(12)
+            .margin_top(8).margin_bottom(8)
+            .margin_start(12).margin_end(12)
+            .build();
+        row.append(&super::icon_helper::load_app_icon(&app.icon_path, &app.icon_url, 28, &app.name));
+
+        let info = GBox::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(2).valign(Align::Center).hexpand(true)
+            .build();
+        info.append(&Label::builder()
+            .label(&app.name)
+            .halign(Align::Start)
+            .css_classes(vec!["heading".to_string()])
+            .build());
+        let detail = if !app.current_last_updated.is_empty() && !app.new_last_updated.is_empty() {
+            format!("Catalog metadata updated: {} → {}", app.current_last_updated, app.new_last_updated)
+        } else if !app.summary.is_empty() {
+            app.summary.clone()
+        } else {
+            "Updated web app metadata available".to_string()
+        };
+        info.append(&Label::builder()
+            .label(&detail)
+            .halign(Align::Start)
+            .wrap(true)
+            .css_classes(vec!["caption".to_string(), "dim-label".to_string()])
+            .build());
+        row.append(&info);
+
+        let upd_btn = Button::builder()
+            .label("Update")
+            .valign(Align::Center)
+            .build();
+        row.append(&upd_btn);
+        app_row.append(&row);
+
+        let row_prog = ProgressBar::builder()
+            .margin_start(12).margin_end(12)
+            .visible(false)
+            .build();
+        app_row.append(&row_prog);
+        card.append(&app_row);
+        card.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+        let app_id = app.id.clone();
+        let state_p = state.clone();
+        let prog_p = row_prog.clone();
+        let btn_p = upd_btn.clone();
+        let row_p = app_row.clone();
+        let rem_p = remaining.clone();
+        let card_p = card.clone();
+
+        upd_btn.connect_clicked(move |btn| {
+            if state_p.is_running() { return; }
+            state_p.start(&app_id);
+            btn.set_sensitive(false);
+            btn.set_label("Updating…");
+            prog_p.set_fraction(0.15);
+            prog_p.set_visible(true);
+
+            let id_t = app_id.clone();
+            let (tx, rx) = mpsc::channel::<bool>();
+            std::thread::spawn(move || {
+                let (ok, _) = rakuos_webapps::update(&id_t);
+                let _ = tx.send(ok);
+            });
+
+            let state_r = state_p.clone();
+            let prog_r = prog_p.clone();
+            let btn_r = btn_p.clone();
+            let row_r = row_p.clone();
+            let rem_r = rem_p.clone();
+            let card_r = card_p.clone();
+
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                match rx.try_recv() {
+                    Ok(ok) => {
+                        state_r.stop();
+                        prog_r.set_visible(false);
+                        if ok {
+                            row_r.set_visible(false);
+                            let rem = rem_r.get().saturating_sub(1);
+                            rem_r.set(rem);
+                            if rem == 0 { card_r.set_visible(false); }
+                        } else {
+                            btn_r.set_label("Retry");
+                            btn_r.set_sensitive(true);
+                        }
+                        glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        let cur = prog_r.fraction();
+                        if cur < 0.95 { prog_r.set_fraction((cur + 0.02).min(0.95)); }
+                        glib::ControlFlow::Continue
+                    }
+                    Err(_) => {
+                        state_r.stop();
+                        prog_r.set_visible(false);
+                        btn_r.set_label("Retry");
+                        btn_r.set_sensitive(true);
+                        glib::ControlFlow::Break
+                    }
+                }
+            });
+        });
+    }
+
+    let ids: Vec<String> = webapps.iter().map(|w| w.id.clone()).collect();
+    let state_a = state.clone();
+    let btn_a = update_all_btn.clone();
+    let card_a = card.clone();
+    let status_a = status_lbl.clone();
+
+    update_all_btn.connect_clicked(move |btn| {
+        if state_a.is_running() { return; }
+        state_a.start("webapps-all");
+        btn.set_sensitive(false);
+        btn.set_label("Updating…");
+        status_a.set_label("Updating web apps…");
+
+        let ids_t = ids.clone();
+        let (tx, rx) = mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let mut all_ok = true;
+            for id in &ids_t {
+                let (ok, _) = rakuos_webapps::update(id);
+                if !ok { all_ok = false; }
+            }
+            let _ = tx.send(all_ok);
+        });
+
+        let state_r = state_a.clone();
+        let btn_r = btn_a.clone();
+        let card_r = card_a.clone();
+        let status_r = status_a.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(ok) => {
+                    state_r.stop();
+                    if ok {
+                        card_r.set_visible(false);
+                        status_r.set_label("Web apps updated");
+                    } else {
+                        status_r.set_label("Some web app updates failed");
+                        btn_r.set_label("Retry");
+                        btn_r.set_sensitive(true);
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => {
+                    state_r.stop();
+                    btn_r.set_label("Retry");
+                    btn_r.set_sensitive(true);
+                    glib::ControlFlow::Break
+                }
             }
         });
     });

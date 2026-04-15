@@ -4667,6 +4667,7 @@ dependencies = [
  "rakuos-flatpak",
  "rakuos-packages",
  "rakuos-updates",
+ "rakuos-webapps",
  "resvg 0.44.0",
  "serde",
  "serde_json",

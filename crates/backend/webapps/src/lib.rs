@@ -53,9 +53,38 @@ pub struct WebApp {
     #[serde(default)] pub custom_css: String,
     #[serde(default)] pub session_group: String,
     #[serde(default)] pub mimetypes: Vec<String>,
+    #[serde(default)] pub tray: WebAppTray,
     #[serde(default)] pub last_updated: String,
     #[serde(default)] pub source: String,
     #[serde(default)] pub installed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebAppTray {
+    #[serde(default)] pub enabled: bool,
+    #[serde(default)] pub close_to_tray: bool,
+    #[serde(default)] pub menu: Vec<WebAppTrayMenuItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebAppTrayMenuItem {
+    #[serde(default)] pub id: String,
+    #[serde(default)] pub label: String,
+    #[serde(default)] pub action: String,
+    #[serde(default)] pub target: String,
+    #[serde(default)] pub selector: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebAppUpdate {
+    pub id: String,
+    pub name: String,
+    #[serde(default)] pub summary: String,
+    #[serde(default)] pub icon_path: String,
+    #[serde(default)] pub icon_url: String,
+    #[serde(default)] pub current_last_updated: String,
+    #[serde(default)] pub new_last_updated: String,
+    #[serde(default)] pub source: String,
 }
 
 impl Default for WebApp {
@@ -75,6 +104,7 @@ impl Default for WebApp {
             custom_css: String::new(),
             session_group: String::new(),
             mimetypes: Vec::new(),
+            tray: WebAppTray::default(),
             last_updated: String::new(),
             source: "webapp".to_string(),
             installed: false,
@@ -198,6 +228,45 @@ pub fn search(query: &str) -> Vec<WebApp> {
         .collect()
 }
 
+/// Return installed web apps with newer catalog metadata available.
+pub fn get_updates() -> Vec<WebAppUpdate> {
+    let installed = get_installed();
+    if installed.is_empty() {
+        return Vec::new();
+    }
+
+    let catalog = get_catalog();
+    let mut by_id = std::collections::HashMap::new();
+    for app in catalog {
+        by_id.insert(app.id.clone(), app);
+    }
+
+    installed
+        .into_iter()
+        .filter_map(|local| {
+            let remote = by_id.get(&local.id)?;
+            if remote.last_updated.is_empty() || remote.last_updated == local.last_updated {
+                return None;
+            }
+
+            Some(WebAppUpdate {
+                id: local.id.clone(),
+                name: remote.name.clone(),
+                summary: remote.summary.clone(),
+                icon_path: local.icon_path.clone(),
+                icon_url: if !remote.icon_url.is_empty() {
+                    remote.icon_url.clone()
+                } else {
+                    local.icon_url.clone()
+                },
+                current_last_updated: local.last_updated.clone(),
+                new_last_updated: remote.last_updated.clone(),
+                source: "webapp".to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Install a web app from the catalog. Returns (success, message).
 pub fn install(app_id: &str) -> (bool, String) {
     let catalog = get_catalog();
@@ -227,6 +296,7 @@ pub fn install(app_id: &str) -> (bool, String) {
         "custom_css": app.custom_css,
         "session_group": app.session_group,
         "mimetypes": app.mimetypes,
+        "tray": app.tray,
         "last_updated": app.last_updated,
         "source": "webapp",
         "installed": true,
@@ -335,6 +405,7 @@ pub fn install_custom(
         "custom_css":   "",
         "session_group": "",
         "mimetypes":    [],
+        "tray":         { "enabled": false, "close_to_tray": false, "menu": [] },
         "last_updated": "",
         "source":       "webapp",
         "installed":    true,
@@ -386,6 +457,25 @@ pub fn uninstall(app_id: &str) -> (bool, String) {
         .output();
 
     (true, format!("{} uninstalled.", name))
+}
+
+/// Refresh an installed web app from the remote catalog, preserving session data.
+pub fn update(app_id: &str) -> (bool, String) {
+    if !is_installed(app_id) {
+        return (false, format!("Web app '{}' is not installed.", app_id));
+    }
+
+    let (removed_ok, removed_msg) = uninstall(app_id);
+    if !removed_ok {
+        return (false, removed_msg);
+    }
+
+    let (install_ok, install_msg) = install(app_id);
+    if install_ok {
+        (true, format!("{} Refreshed web app metadata from catalog.", install_msg))
+    } else {
+        (false, install_msg)
+    }
 }
 
 // ── Internals ─────────────────────────────────────────────────────────────────
@@ -467,6 +557,7 @@ fn parse_webapp(
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
+        tray: serde_json::from_value(v["tray"].clone()).unwrap_or_default(),
         screenshots: v["screenshots"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -613,11 +704,14 @@ fn write_desktop(app: &WebApp, icon_path: &str) -> Result<()> {
         app.categories.join(";") + ";"
     };
     let exec = if app.session_group.is_empty() {
-        format!("/usr/bin/rakuos-webapp-launcher '{}' '{}'", app.url, app.name)
+        format!(
+            "/usr/bin/rakuos-webapp-launcher --url '{}' --name '{}' --app-id '{}'",
+            app.url, app.name, app.id
+        )
     } else {
         format!(
-            "/usr/bin/rakuos-webapp-launcher '{}' '{}' '{}'",
-            app.url, app.name, app.session_group
+            "/usr/bin/rakuos-webapp-launcher --url '{}' --name '{}' --app-id '{}' --session-group '{}'",
+            app.url, app.name, app.id, app.session_group
         )
     };
 

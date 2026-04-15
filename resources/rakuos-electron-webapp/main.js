@@ -5,7 +5,7 @@
  * Uses castlabs Electron (ECS) with Widevine fully wired up.
  */
 
-const { app, BrowserWindow, components, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, Tray, components, nativeImage, shell } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 
@@ -27,8 +27,78 @@ const MIME_TYPES = {
     '.csv':  'text/csv',
 };
 
-// Find the first http(s) URL in argv — immune to flag ordering
+function sanitizeAppId(input) {
+    return String(input || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+function parseNamedArgs(argv) {
+    const parsed = {};
+    for (let i = 1; i < argv.length; i++) {
+        const arg = argv[i];
+        if (!arg.startsWith('--')) continue;
+        const key = arg.slice(2);
+        const value = argv[i + 1];
+        if (typeof value === 'string' && !value.startsWith('--')) {
+            parsed[key] = value;
+            i += 1;
+        } else {
+            parsed[key] = 'true';
+        }
+    }
+    return parsed;
+}
+
+function loadSidecarConfig(configPath) {
+    if (!configPath || !fs.existsSync(configPath)) return {};
+    try {
+        const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+        console.warn('[rakuos-webapp] Failed to read config file:', configPath, error);
+        return {};
+    }
+}
+
+function normaliseTrayConfig(tray) {
+    if (!tray || typeof tray !== 'object') {
+        return { enabled: false, close_to_tray: false, menu: [] };
+    }
+    const allowedActions = new Set(['separator', 'navigate', 'open_external', 'reload', 'click_selector']);
+    const menu = Array.isArray(tray.menu) ? tray.menu
+        .filter(item => item && typeof item === 'object' && allowedActions.has(item.action))
+        .map(item => ({
+            id:       typeof item.id === 'string' ? item.id : '',
+            label:    typeof item.label === 'string' ? item.label : '',
+            action:   item.action,
+            target:   typeof item.target === 'string' ? item.target : '',
+            selector: typeof item.selector === 'string' ? item.selector : '',
+        }))
+        : [];
+    return {
+        enabled: tray.enabled === true,
+        close_to_tray: tray.close_to_tray === true,
+        menu,
+    };
+}
+
+// Find named args first, then fall back to the old positional format.
 function parseArgs() {
+    const named = parseNamedArgs(process.argv);
+    if (named.url || named.name) {
+        return {
+            url:          named.url || '',
+            name:         named.name || 'Web App',
+            css:          named.css || '',
+            sessionGroup: named['session-group'] || '',
+            fileArg:      named.file && fs.existsSync(named.file) ? named.file : '',
+            appId:        named['app-id'] || '',
+            configFile:   named['config-file'] || '',
+        };
+    }
+
     const argv = process.argv;
     for (let i = 1; i < argv.length; i++) {
         if (argv[i].startsWith('http://') || argv[i].startsWith('https://')) {
@@ -39,6 +109,8 @@ function parseArgs() {
                 css:          argv[i + 2] || '',
                 sessionGroup: argv[i + 3] || '',
                 fileArg:      fileArg && fs.existsSync(fileArg) ? fileArg : '',
+                appId:        argv[i + 5] || '',
+                configFile:   '',
             };
         }
     }
@@ -50,11 +122,16 @@ function parseArgs() {
 const parsed = parseArgs();
 if (!parsed) process.exit(1);
 
-const { url: targetUrl, name: appName, css: customCss, sessionGroup, fileArg } = parsed;
-console.log('[rakuos-webapp] Launching:', targetUrl, '|', appName, fileArg ? `| file: ${fileArg}` : '');
+const sidecarConfig = loadSidecarConfig(parsed.configFile);
+const targetUrl = parsed.url || sidecarConfig.url || '';
+const appName = parsed.name || sidecarConfig.name || 'Web App';
+const customCss = sidecarConfig.custom_css || parsed.css || '';
+const sessionGroup = parsed.sessionGroup || sidecarConfig.session_group || '';
+const fileArg = parsed.fileArg;
+const appId = parsed.appId || sidecarConfig.id || sanitizeAppId(appName);
+const trayConfig = normaliseTrayConfig(sidecarConfig.tray);
 
-// Sanitise name → safe id
-const appId = appName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+console.log('[rakuos-webapp] Launching:', targetUrl, '|', appName, fileArg ? `| file: ${fileArg}` : '');
 
 // Suite members share a userData dir (keyed on sessionGroup) so Electron stores
 // cookies/localStorage in the same Partitions sub-directory — giving them a
@@ -104,6 +181,130 @@ app.commandLine.appendSwitch('enable-features',
 app.commandLine.appendSwitch('disable-features', 'MediaSessionService');
 
 let win = null;
+let tray = null;
+let isQuitting = false;
+
+function showWindow() {
+    if (!win) return;
+    if (win.isMinimized()) {
+        win.restore();
+    }
+    win.show();
+    win.focus();
+}
+
+function hideWindow() {
+    if (!win) return;
+    win.hide();
+}
+
+function resolveNavigationTarget(target) {
+    if (!target) return targetUrl;
+    try {
+        return new URL(target, targetUrl).toString();
+    } catch (_) {
+        return target;
+    }
+}
+
+function runSelectorAction(selector) {
+    if (!win || !selector) return;
+    showWindow();
+    win.webContents.executeJavaScript(`
+        (function() {
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (!el) {
+                console.warn('[rakuos-webapp] tray selector not found:', ${JSON.stringify(selector)});
+                return false;
+            }
+            el.click();
+            return true;
+        })();
+    `).catch(error => {
+        console.error('[rakuos-webapp] tray click_selector failed:', error);
+    });
+}
+
+function executeTrayMenuItem(item) {
+    if (!item || !item.action) return;
+    if (item.action === 'navigate') {
+        if (!win) return;
+        const dest = resolveNavigationTarget(item.target);
+        showWindow();
+        win.loadURL(dest).catch(error => {
+            console.error('[rakuos-webapp] tray navigate failed:', dest, error);
+        });
+    } else if (item.action === 'open_external') {
+        if (item.target) {
+            shell.openExternal(item.target).catch(error => {
+                console.error('[rakuos-webapp] tray open_external failed:', item.target, error);
+            });
+        }
+    } else if (item.action === 'reload') {
+        if (win) {
+            showWindow();
+            win.webContents.reload();
+        }
+    } else if (item.action === 'click_selector') {
+        runSelectorAction(item.selector);
+    }
+}
+
+function buildTrayMenu() {
+    const items = [];
+    for (const item of trayConfig.menu) {
+        if (item.action === 'separator') {
+            items.push({ type: 'separator' });
+            continue;
+        }
+        items.push({
+            label: item.label || 'Action',
+            click: () => executeTrayMenuItem(item),
+        });
+    }
+    if (items.length > 0) {
+        items.push({ type: 'separator' });
+    }
+    items.push({
+        label: `Open ${appName}`,
+        click: () => showWindow(),
+    });
+    items.push({
+        label: `Quit ${appName}`,
+        click: () => {
+            isQuitting = true;
+            app.quit();
+        },
+    });
+    return Menu.buildFromTemplate(items);
+}
+
+function createTray() {
+    if (!trayConfig.enabled || tray) return;
+
+    const iconPath = path.join(
+        app.getPath('home'),
+        '.local', 'share', 'rakuos', 'webapps', 'icons', `${appId}.png`
+    );
+    let trayIcon = fs.existsSync(iconPath)
+        ? nativeImage.createFromPath(iconPath)
+        : nativeImage.createEmpty();
+    if (!trayIcon.isEmpty()) {
+        trayIcon = trayIcon.resize({ width: 22, height: 22 });
+    }
+
+    tray = new Tray(trayIcon.isEmpty() ? nativeImage.createEmpty() : trayIcon);
+    tray.setToolTip(appName);
+    tray.setContextMenu(buildTrayMenu());
+    tray.on('click', () => {
+        if (!win) return;
+        if (win.isVisible()) hideWindow();
+        else showWindow();
+    });
+    tray.on('right-click', () => {
+        tray.popUpContextMenu(buildTrayMenu());
+    });
+}
 
 async function createWindow() {
     // Wait for Widevine CDM (castlabs ECS)
@@ -293,8 +494,36 @@ async function createWindow() {
         console.error('[rakuos-webapp] loadURL error:', e);
     });
 
+    win.on('close', (event) => {
+        saveWindowState(win);
+        if (trayConfig.enabled && trayConfig.close_to_tray && !isQuitting) {
+            event.preventDefault();
+            hideWindow();
+        }
+    });
+
     win.on('closed', () => { win = null; });
 }
 
-app.whenReady().then(createWindow);
-app.on('window-all-closed', () => app.quit());
+app.whenReady().then(async () => {
+    createTray();
+    await createWindow();
+});
+
+app.on('before-quit', () => {
+    isQuitting = true;
+});
+
+app.on('window-all-closed', () => {
+    if (!trayConfig.enabled) {
+        app.quit();
+    }
+});
+
+app.on('activate', () => {
+    if (!win) {
+        createWindow();
+    } else {
+        showWindow();
+    }
+});

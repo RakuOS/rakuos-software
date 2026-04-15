@@ -16,6 +16,7 @@ const CMD_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct UpdateResult {
     pub packages: Vec<serde_json::Value>,
     pub flatpak: Vec<serde_json::Value>,
+    pub webapps: Vec<serde_json::Value>,
     pub appimages: Vec<serde_json::Value>,
     pub image_available: bool,
     pub image_info: serde_json::Value,
@@ -40,6 +41,10 @@ impl UpdateResult {
             let n = self.appimages.len();
             parts.push(format!("{} AppImage update{}", n, if n != 1 { "s" } else { "" }));
         }
+        if !self.webapps.is_empty() {
+            let n = self.webapps.len();
+            parts.push(format!("{} web app update{}", n, if n != 1 { "s" } else { "" }));
+        }
         if self.image_available {
             let ver = self.image_info["available"]
                 .as_str()
@@ -56,12 +61,13 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
     let check_fp     = settings.auto_check_flatpak;
     let check_img    = settings.auto_check_image;
     let check_ai     = settings.auto_check_appimages;
+    let check_web    = true;
     let auto_update  = settings.auto_update;
 
-    log::info!("Starting update checks (packages={check_pkgs}, flatpak={check_fp}, image={check_img}, appimages={check_ai})");
+    log::info!("Starting update checks (packages={check_pkgs}, flatpak={check_fp}, image={check_img}, appimages={check_ai}, webapps={check_web})");
 
-    // Run all four checks concurrently
-    let (pkg_res, fp_res, img_res, ai_res) = tokio::join!(
+    // Run all checks concurrently
+    let (pkg_res, fp_res, img_res, ai_res, web_res) = tokio::join!(
         async {
             if check_pkgs {
                 log::info!("Running: {} check", RAKUOS_UPDATE);
@@ -120,11 +126,30 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
                 vec![]
             }
         },
+        async {
+            if check_web {
+                log::info!("Running web app update checks");
+                let updates: Vec<serde_json::Value> =
+                    tokio::task::spawn_blocking(|| {
+                        rakuos_webapps::get_updates()
+                            .into_iter()
+                            .filter_map(|w| serde_json::to_value(w).ok())
+                            .collect()
+                    })
+                    .await
+                    .unwrap_or_default();
+                log::info!("Web app check done: {} update(s)", updates.len());
+                Some((true, updates))
+            } else {
+                None
+            }
+        },
     );
 
     let mut result = UpdateResult {
         packages:        pkg_res.map(|(_, v)| v).unwrap_or_default(),
         flatpak:         fp_res.map(|(_, v)| v).unwrap_or_default(),
+        webapps:         web_res.map(|(_, v)| v).unwrap_or_default(),
         appimages:       ai_res,
         image_available: img_res.as_ref().map(|(ok, _)| *ok).unwrap_or(false),
         image_info:      img_res.map(|(_, v)| v).unwrap_or(serde_json::json!({})),
@@ -133,6 +158,7 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
 
     result.total = result.packages.len()
         + result.flatpak.len()
+        + result.webapps.len()
         + result.appimages.len()
         + if result.image_available { 1 } else { 0 };
 
@@ -170,6 +196,7 @@ pub async fn run_checks(settings: &Settings) -> UpdateResult {
         if let Some(fps)  = new_fp  { result.flatpak  = fps;  }
         result.total = result.packages.len()
             + result.flatpak.len()
+            + result.webapps.len()
             + result.appimages.len()
             + if result.image_available { 1 } else { 0 };
     }

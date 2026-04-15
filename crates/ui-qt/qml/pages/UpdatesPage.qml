@@ -12,17 +12,17 @@ Item {
     property bool rebootRequired: false
     property bool imageUpdateDone: false
 
-    // Update queue: ["packages", "flatpak", "image"] in order
+    // Update queue: ["packages", "flatpak", "webapps", "image"] in order
     property var updateQueue: []
     property int queueStep: 0
     property bool inQueueMode: false
     property bool pendingOpIsCheck: false
     property string currentOpLabel: ""
-    // Which update type is actively running: "packages", "flatpak", "image", or a specific app_id
+    // Which update type is actively running: "packages", "flatpak", "webapps", "image", or a specific app_id
     property string activeUpdateType: ""
 
     // Tracks successfully completed updates so rows can disappear.
-    // Keys: specific app_id, "__packages__" for all rpm rows, "__flatpak__" for all flatpak rows.
+    // Keys: specific app_id, "__packages__" for all rpm rows, "__flatpak__" for all flatpak rows, "__webapps__" for all webapp rows.
     property var completedUpdates: ({})
 
 
@@ -98,6 +98,7 @@ Item {
                         var co = Object.assign({}, completedUpdates);
                         if (finishedStep === "packages") co["__packages__"] = true;
                         else if (finishedStep === "flatpak") co["__flatpak__"] = true;
+                        else if (finishedStep === "webapps") co["__webapps__"] = true;
                         completedUpdates = co;
                     }
                     queueStep++;
@@ -139,6 +140,8 @@ Item {
                             co2["__packages__"] = true;
                         } else if (savedType === "flatpak") {
                             co2["__flatpak__"] = true;
+                        } else if (savedType === "webapps") {
+                            co2["__webapps__"] = true;
                         } else if (savedType) {
                             co2[savedType] = true;
                         }
@@ -199,6 +202,14 @@ Item {
                 var id = p.id || p.name || "";
                 if (!cu[id]) n++;
             });
+        }
+        if (updateData.webapps) {
+            if (!cu["__webapps__"]) {
+                updateData.webapps.forEach(function(p) {
+                    var id = p.id || p.name || "";
+                    if (!cu[id]) n++;
+                });
+            }
         }
         if (updateData.image_available && !imageUpdateDone) n += 1;
         return n;
@@ -514,6 +525,17 @@ Item {
                         onUpdateAllClicked: _doSectionUpdate(packages)
                     }
 
+                    UpdateSection {
+                        title: "Web Apps"
+                        packages: {
+                            if (!updateData || !updateData.webapps) return [];
+                            return updateData.webapps.map(function(p) {
+                                return Object.assign({}, p, {pkg_type: "webapp"});
+                            });
+                        }
+                        onUpdateAllClicked: _doSectionUpdate(packages)
+                    }
+
                     // ── Flatpak runtimes / add-ons ────────────────────────────
                     UpdateSection {
                         title: "Runtimes/Add-ons"
@@ -550,6 +572,8 @@ Item {
             updateQueue.push("packages");
         if (updateData && updateData.flatpak && updateData.flatpak.length > 0)
             updateQueue.push("flatpak");
+        if (updateData && updateData.webapps && updateData.webapps.length > 0)
+            updateQueue.push("webapps");
         if (updateData && updateData.image_available === true)
             updateQueue.push("image");
         if (updateQueue.length === 0) return;
@@ -572,6 +596,10 @@ Item {
             currentOpLabel = "Updating Flatpak apps… (" + stepNum + "/" + total + ")";
             activeUpdateType = "flatpak";
             backend.installApp("__upgrade_all__", "flatpak");
+        } else if (step === "webapps") {
+            currentOpLabel = "Updating web apps… (" + stepNum + "/" + total + ")";
+            activeUpdateType = "webapps";
+            backend.updateWebApp("__all__");
         } else if (step === "image") {
             currentOpLabel = "Updating system image… (" + stepNum + "/" + total + ")";
             activeUpdateType = "image";
@@ -592,10 +620,15 @@ Item {
         updating = true;
         var hasFlatpak = pkgs.some(function(p) { return p.pkg_type === "flatpak"; });
         var hasRpm     = pkgs.some(function(p) { return p.pkg_type === "rpm"; });
+        var hasWebapp  = pkgs.some(function(p) { return p.pkg_type === "webapp"; });
         if (hasFlatpak) {
             currentOpLabel = "Updating Flatpak apps…";
             activeUpdateType = "flatpak";
             backend.installApp("__upgrade_all__", "flatpak");
+        } else if (hasWebapp) {
+            currentOpLabel = "Updating web apps…";
+            activeUpdateType = "webapps";
+            backend.updateWebApp("__all__");
         } else if (hasRpm) {
             currentOpLabel = "Updating overlay packages…";
             activeUpdateType = "packages";
@@ -622,7 +655,8 @@ Item {
                 var id = p.app_id || p.id || p.name || "";
                 var done = (id && cu[id]) ||
                            (p.pkg_type === "rpm"     && cu["__packages__"]) ||
-                           (p.pkg_type === "flatpak" && cu["__flatpak__"]);
+                           (p.pkg_type === "flatpak" && cu["__flatpak__"]) ||
+                           (p.pkg_type === "webapp"  && cu["__webapps__"]);
                 if (!done) n++;
             }
             return n;
@@ -687,6 +721,8 @@ Item {
                         if (t === "packages" && modelData.pkg_type === "rpm") return true;
                         // All flatpak rows light up when upgrading flatpak batch
                         if (t === "flatpak" && modelData.pkg_type === "flatpak") return true;
+                        // All webapp rows light up when upgrading webapp batch
+                        if (t === "webapps" && modelData.pkg_type === "webapp") return true;
                         // Legacy type match
                         if (t === modelData.pkg_type) return true;
                         // Individual update: matched by id
@@ -700,6 +736,7 @@ Item {
                         if (_pkgId && cu[_pkgId]) return true;
                         if (modelData.pkg_type === "rpm" && cu["__packages__"]) return true;
                         if (modelData.pkg_type === "flatpak" && cu["__flatpak__"]) return true;
+                        if (modelData.pkg_type === "webapp" && cu["__webapps__"]) return true;
                         return false;
                     }
 
@@ -742,6 +779,13 @@ Item {
                                         spacing: 6
                                         Label {
                                             text: {
+                                                if (modelData.pkg_type === "webapp") {
+                                                    var oldTs = modelData.current_last_updated || "";
+                                                    var newTs = modelData.new_last_updated || "";
+                                                    if (oldTs && newTs) return oldTs + "  →  " + newTs;
+                                                    if (modelData.summary) return modelData.summary;
+                                                    return "Updated web app metadata available";
+                                                }
                                                 var cur = modelData.current_version || modelData.version || "";
                                                 var nw = modelData.new_version || modelData.version || "";
                                                 if (cur && nw && cur !== nw) return cur + "  →  " + nw;
@@ -780,6 +824,20 @@ Item {
                                                 color: "white"
                                             }
                                         }
+                                        Rectangle {
+                                            visible: modelData.pkg_type === "webapp"
+                                            radius: 3
+                                            color: "#00695c"
+                                            width: webappLbl.implicitWidth + 8
+                                            height: 16
+                                            Label {
+                                                id: webappLbl
+                                                anchors.centerIn: parent
+                                                text: "Web App"
+                                                font.pixelSize: 9
+                                                color: "white"
+                                            }
+                                        }
                                     }
                                 }
 
@@ -802,6 +860,9 @@ Item {
                                             } else {
                                                 backend.installApp(pkg.app_id || pkg.id || "", "flatpak");
                                             }
+                                        } else if (pkg.pkg_type === "webapp") {
+                                            updatesPage.activeUpdateType = pkgId;
+                                            backend.updateWebApp(pkg.id || pkg.app_id || "");
                                         } else {
                                             // Individual RPM update — only upgrade this specific package
                                             updatesPage.activeUpdateType = pkgId;

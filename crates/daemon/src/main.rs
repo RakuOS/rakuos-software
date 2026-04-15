@@ -184,8 +184,10 @@ async fn main() -> anyhow::Result<()> {
                         "total":           count,
                         "packages":        result.packages,
                         "flatpak":         result.flatpak,
+                        "webapps":         result.webapps,
                         "appimages":       result.appimages,
                         "image_available": result.image_available,
+                        "reboot_required": result.image_info["reboot_required"].as_bool().unwrap_or(false),
                         "image_info":      result.image_info,
                     });
                     let cache_path = daemon_cache_path();
@@ -217,6 +219,7 @@ fn notification_body_from_cache(cache: &serde_json::Value) -> Option<String> {
 
     let pkgs = cache["packages"].as_array().map(|a| a.len()).unwrap_or(0);
     let fps  = cache["flatpak"].as_array().map(|a| a.len()).unwrap_or(0);
+    let webs = cache["webapps"].as_array().map(|a| a.len()).unwrap_or(0);
     let ais  = cache["appimages"].as_array().map(|a| a.len()).unwrap_or(0);
     let img  = cache["image_available"].as_bool().unwrap_or(false);
 
@@ -228,6 +231,9 @@ fn notification_body_from_cache(cache: &serde_json::Value) -> Option<String> {
     }
     if ais > 0 {
         parts.push(format!("{} AppImage update{}", ais, if ais != 1 { "s" } else { "" }));
+    }
+    if webs > 0 {
+        parts.push(format!("{} web app update{}", webs, if webs != 1 { "s" } else { "" }));
     }
     if img {
         let ver = cache["image_info"]["available"].as_str().unwrap_or("new version");

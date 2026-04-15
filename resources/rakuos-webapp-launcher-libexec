@@ -1,7 +1,7 @@
 #!/bin/bash
 # rakuos-webapp-launcher — Launch a web app using castlabs Electron (ECS).
 #
-# Usage: rakuos-webapp-launcher <url> <n> [custom_css]
+# Usage: rakuos-webapp-launcher --url <url> --name <name> [--session-group group] [--file file] [--app-id id]
 
 ELECTRON="/usr/lib/rakuos-electron/electron"
 APP_DIR="/usr/lib/rakuos-electron-webapp"
@@ -13,32 +13,87 @@ if [[ ! -x "$ELECTRON" ]]; then
     exit 1
 fi
 
-URL="${1:?Usage: rakuos-webapp-launcher <url> <name> [session_group] [file]}"
-NAME="${2:?Usage: rakuos-webapp-launcher <url> <name> [session_group] [file]}"
-SESSION_GROUP="${3:-}"
-FILE_ARG="${4:-}"
+URL=""
+NAME=""
+SESSION_GROUP=""
+FILE_ARG=""
+APP_ID=""
+
+if [[ "${1:-}" == --* ]]; then
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --url)
+                URL="${2:-}"
+                shift 2
+                ;;
+            --name)
+                NAME="${2:-}"
+                shift 2
+                ;;
+            --session-group)
+                SESSION_GROUP="${2:-}"
+                shift 2
+                ;;
+            --file)
+                FILE_ARG="${2:-}"
+                shift 2
+                ;;
+            --app-id)
+                APP_ID="${2:-}"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+else
+    URL="${1:?Usage: rakuos-webapp-launcher <url> <name> [session_group] [file] [app_id]}"
+    NAME="${2:?Usage: rakuos-webapp-launcher <url> <name> [session_group] [file] [app_id]}"
+    SESSION_GROUP="${3:-}"
+    FILE_ARG="${4:-}"
+    APP_ID="${5:-}"
+fi
+
+if [[ -z "$URL" || -z "$NAME" ]]; then
+    echo "ERROR: Missing required --url or --name." >&2
+    exit 1
+fi
 
 # Sanitise name → app id (must match what main.js produces)
-APP_ID="$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')"
-
-# Read custom CSS from per-app file — name-derived id matches what install() writes
-CSS_FILE="${HOME}/.local/share/rakuos/webapps/${APP_ID}.css"
-CUSTOM_CSS=""
-if [[ -f "$CSS_FILE" ]]; then
-    CUSTOM_CSS="$(cat "$CSS_FILE")"
+if [[ -z "$APP_ID" ]]; then
+    APP_ID="$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')"
 fi
+
+CONFIG_FILE="${HOME}/.local/share/rakuos/webapps/${APP_ID}.json"
 
 # Icon path — cached by the software center on install
 ICON_PATH="${HOME}/.local/share/rakuos/webapps/icons/${APP_ID}.png"
 
-exec "$ELECTRON" \
-    --widevine-cdm-path="$WIDEVINE_DIR" \
-    --ozone-platform-hint=auto \
-    --ozone-platform=x11 \
-    ${ICON_PATH:+--app-icon="$ICON_PATH"} \
-    "$APP_DIR" \
-    "$URL" \
-    "$NAME" \
-    "$CUSTOM_CSS" \
-    "$SESSION_GROUP" \
-    "$FILE_ARG"
+ARGS=(
+    --widevine-cdm-path="$WIDEVINE_DIR"
+    --ozone-platform-hint=auto
+    --ozone-platform=x11
+)
+
+if [[ -n "$ICON_PATH" ]]; then
+    ARGS+=(--app-icon="$ICON_PATH")
+fi
+
+ARGS+=(
+    "$APP_DIR"
+    --url "$URL"
+    --name "$NAME"
+    --app-id "$APP_ID"
+    --config-file "$CONFIG_FILE"
+)
+
+if [[ -n "$SESSION_GROUP" ]]; then
+    ARGS+=(--session-group "$SESSION_GROUP")
+fi
+
+if [[ -n "$FILE_ARG" ]]; then
+    ARGS+=(--file "$FILE_ARG")
+fi
+
+exec "$ELECTRON" "${ARGS[@]}"
