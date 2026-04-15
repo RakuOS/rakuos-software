@@ -2,7 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    glib, Align, Box as GBox, Button, DropDown, Label, Orientation,
+    glib, Align, Box as GBox, Button, DropDown, Label, Orientation, Spinner,
     ScrolledWindow, Separator, StringList, Widget,
 };
 use libadwaita::prelude::*;
@@ -48,6 +48,23 @@ fn branch_label_from_tag(tag: &str) -> &'static str {
     } else {
         "Stable"
     }
+}
+
+fn stream_succeeded<I>(stream: I) -> bool
+where
+    I: Iterator<Item = String>,
+{
+    let mut saw_done = false;
+    let mut exit_code = 1i32;
+
+    for line in stream {
+        if let Some(code) = line.strip_prefix("__done__") {
+            saw_done = true;
+            exit_code = code.trim().parse().unwrap_or(1);
+        }
+    }
+
+    saw_done && exit_code == 0
 }
 
 pub fn build() -> Widget {
@@ -374,13 +391,14 @@ pub fn build() -> Widget {
     img_reboot_btn.connect_clicked(|_| { rakuos_updates::schedule_reboot(); });
     overlay_reboot_btn.connect_clicked(|_| { rakuos_updates::schedule_reboot(); });
 
-    // ── Wire Switch DE ────────────────────────────────────────────────────────
+    // ── Wire Image Switch ────────────────────────────────────────────────────
     // current_image shared state populated after load
     let current_image_state: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     {
         let img_state = Rc::clone(&current_image_state);
         let combo_c   = de_combo.clone();
         let branch_c  = branch_combo.clone();
+        let outer_w   = outer.clone();
         let status_c  = switch_status_lbl.clone();
         let switch_c  = switch_btn.clone();
         let reboot_c  = img_reboot_btn.clone();
@@ -390,7 +408,7 @@ pub fn build() -> Widget {
             if img.is_empty() { return; }
             let idx = combo_c.selected() as usize;
             let branch_idx = branch_c.selected() as usize;
-            let Some(&(_, de_id)) = DE_LABELS.get(idx) else { return; };
+            let Some(&(de_label, de_id)) = DE_LABELS.get(idx) else { return; };
             let Some(&(branch_label, branch_tag)) = BRANCH_LABELS.get(branch_idx) else { return; };
             let (_, _, is_nvidia) = parse_image_ref(&img);
             let new_name = if is_nvidia { format!("{}-nvidia", de_id) } else { de_id.to_string() };
@@ -398,35 +416,16 @@ pub fn build() -> Widget {
             let base = img.split(':').next().unwrap_or("");
             let repo_base = base.rsplitn(2, '/').nth(1).unwrap_or(base);
             let target = format!("{}/{}:{}", repo_base, new_name, branch_tag);
-
+            show_switch_dialog(
+                outer_w.upcast_ref::<gtk4::Widget>(),
+                &target,
+                de_label,
+                branch_label,
+                status_c.clone(),
+                switch_c.clone(),
+                reboot_c.clone(),
+            );
             btn.set_sensitive(false);
-            btn.set_label("Switching…");
-            status_c.set_label(&format!("Switching to {} on {}…", de_id, branch_label));
-            status_c.set_visible(true);
-
-            let (tx, rx) = mpsc::channel::<()>();
-            std::thread::spawn(move || {
-                let _: Vec<_> = rakuos_updates::pkexec_switch_stream(&target).collect();
-                let _ = tx.send(());
-            });
-
-            let btn_c    = switch_c.clone();
-            let status_r = status_c.clone();
-            let reboot_r = reboot_c.clone();
-
-            glib::timeout_add_local(Duration::from_millis(50), move || {
-                match rx.try_recv() {
-                    Ok(_) => {
-                        btn_c.set_label("Switch Image");
-                        btn_c.set_sensitive(true);
-                        reboot_r.set_visible(true);
-                        status_r.set_label("Switch staged — reboot to apply.");
-                        glib::ControlFlow::Break
-                    }
-                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                    Err(_) => glib::ControlFlow::Break,
-                }
-            });
         });
     }
 
@@ -691,6 +690,268 @@ fn run_overlay_reset(mode: &'static str, status_lbl: Label, reboot_btn: Button) 
             }
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
             Err(_) => glib::ControlFlow::Break,
+        }
+    });
+}
+
+fn show_switch_dialog(
+    parent_widget: &gtk4::Widget,
+    target: &str,
+    de_label: &str,
+    branch_label: &str,
+    status_lbl: Label,
+    switch_btn: Button,
+    reboot_btn: Button,
+) {
+    let dialog = Dialog::builder()
+        .title("Switch Image?")
+        .can_close(false)
+        .build();
+
+    let content = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(16)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(20)
+        .margin_end(20)
+        .build();
+
+    let header = HeaderBar::new();
+    let toolbar = ToolbarView::builder().content(&content).build();
+    toolbar.add_top_bar(&header);
+    dialog.set_child(Some(&toolbar));
+
+    let intro = Label::builder()
+        .label(&format!(
+            "Switching to {} on {} performs a full overlay reset before the new image is staged.\n\nThis wipes the current overlay and saved packages list, then runs the image switch with pkexec.",
+            de_label, branch_label
+        ))
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    content.append(&intro);
+
+    let warning_card = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(8)
+        .css_classes(vec!["card".to_string()])
+        .build();
+    let warning_inner = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(6)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    let warning_title = Label::builder()
+        .label("Full Overlay Reset Required")
+        .halign(Align::Start)
+        .css_classes(vec!["heading".to_string(), "error".to_string()])
+        .build();
+    let warning_desc = Label::builder()
+        .label("Keep this window open while the switch runs. You will be able to reboot once the operation completes.")
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    warning_inner.append(&warning_title);
+    warning_inner.append(&warning_desc);
+    warning_card.append(&warning_inner);
+    content.append(&warning_card);
+
+    let actions = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .halign(Align::End)
+        .build();
+    let cancel_btn = Button::builder()
+        .label("Cancel")
+        .build();
+    let proceed_btn = Button::builder()
+        .label("Proceed")
+        .css_classes(vec!["suggested-action".to_string()])
+        .build();
+    actions.append(&cancel_btn);
+    actions.append(&proceed_btn);
+    content.append(&actions);
+
+    let dialog_c = dialog.clone();
+    let switch_btn_c = switch_btn.clone();
+    cancel_btn.connect_clicked(move |_| {
+        switch_btn_c.set_label("Switch Image");
+        switch_btn_c.set_sensitive(true);
+        let _ = dialog_c.close();
+    });
+
+    let parent_window = parent_widget
+        .root()
+        .and_then(|r| r.downcast::<gtk4::Window>().ok());
+
+    {
+        let dialog_c = dialog.clone();
+        let target = target.to_string();
+        let de_label = de_label.to_string();
+        let branch_label = branch_label.to_string();
+        let status_lbl_c = status_lbl.clone();
+        let switch_btn_c = switch_btn.clone();
+        let reboot_btn_c = reboot_btn.clone();
+        let parent_window_c = parent_window.clone();
+        proceed_btn.connect_clicked(move |_| {
+            let _ = dialog_c.close();
+            show_switch_progress_dialog(
+                parent_window_c.clone(),
+                target.clone(),
+                de_label.clone(),
+                branch_label.clone(),
+                status_lbl_c.clone(),
+                switch_btn_c.clone(),
+                reboot_btn_c.clone(),
+            );
+        });
+    }
+
+    dialog.present(parent_window.as_ref());
+}
+
+fn show_switch_progress_dialog(
+    parent_window: Option<gtk4::Window>,
+    target: String,
+    de_label: String,
+    branch_label: String,
+    status_lbl: Label,
+    switch_btn: Button,
+    reboot_btn: Button,
+) {
+    let dialog = Dialog::builder()
+        .title("Switching Image")
+        .can_close(false)
+        .build();
+
+    let content = GBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(16)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(20)
+        .margin_end(20)
+        .build();
+
+    let header = HeaderBar::new();
+    header.set_show_end_title_buttons(false);
+    let toolbar = ToolbarView::builder().content(&content).build();
+    toolbar.add_top_bar(&header);
+    dialog.set_child(Some(&toolbar));
+
+    let intro = Label::builder()
+        .label(&format!(
+            "Please wait while RakuOS fully resets the overlay and switches to {} on {}.",
+            de_label, branch_label
+        ))
+        .halign(Align::Start)
+        .wrap(true)
+        .css_classes(vec!["dim-label".to_string()])
+        .build();
+    content.append(&intro);
+
+    let progress_row = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(10)
+        .build();
+    let spinner = Spinner::builder()
+        .spinning(true)
+        .build();
+    let progress_lbl = Label::builder()
+        .label("Please wait…")
+        .halign(Align::Start)
+        .build();
+    progress_row.append(&spinner);
+    progress_row.append(&progress_lbl);
+    content.append(&progress_row);
+
+    let result_lbl = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .wrap(true)
+        .visible(false)
+        .build();
+    content.append(&result_lbl);
+
+    let actions = GBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .halign(Align::End)
+        .build();
+    let close_btn = Button::builder()
+        .label("Close")
+        .visible(false)
+        .build();
+    let reboot_action_btn = Button::builder()
+        .label("Reboot to Apply")
+        .css_classes(vec!["suggested-action".to_string()])
+        .visible(false)
+        .build();
+    actions.append(&close_btn);
+    actions.append(&reboot_action_btn);
+    content.append(&actions);
+
+    let (tx, rx) = mpsc::channel::<bool>();
+    std::thread::spawn(move || {
+        let success = stream_succeeded(rakuos_updates::pkexec_reset_overlay_and_switch_stream(&target));
+        let _ = tx.send(success);
+    });
+
+    let dialog_c = dialog.clone();
+    close_btn.connect_clicked(move |_| {
+        let _ = dialog_c.close();
+    });
+
+    reboot_action_btn.connect_clicked(|_| {
+        rakuos_updates::schedule_reboot();
+    });
+
+    dialog.present(parent_window.as_ref());
+
+    glib::timeout_add_local(Duration::from_millis(80), move || {
+        match rx.try_recv() {
+            Ok(ok) => {
+                spinner.set_spinning(false);
+                spinner.set_visible(false);
+                progress_lbl.set_visible(false);
+                result_lbl.set_visible(true);
+                switch_btn.set_label("Switch Image");
+                switch_btn.set_sensitive(true);
+
+                if ok {
+                    dialog.set_can_close(true);
+                    result_lbl.set_label("Image switch staged — reboot to apply.");
+                    result_lbl.add_css_class("success");
+                    reboot_action_btn.set_visible(true);
+                    reboot_btn.set_visible(true);
+                    status_lbl.set_label("Switch staged — reboot to apply.");
+                    status_lbl.remove_css_class("error");
+                    status_lbl.add_css_class("success");
+                    status_lbl.set_visible(true);
+                } else {
+                    dialog.set_can_close(true);
+                    result_lbl.set_label("Image switch failed. Review the system logs and try again.");
+                    result_lbl.add_css_class("error");
+                    close_btn.set_visible(true);
+                    status_lbl.set_label("Image switch failed. Check system logs.");
+                    status_lbl.remove_css_class("success");
+                    status_lbl.add_css_class("error");
+                    status_lbl.set_visible(true);
+                }
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => {
+                switch_btn.set_label("Switch Image");
+                switch_btn.set_sensitive(true);
+                glib::ControlFlow::Break
+            }
         }
     });
 }

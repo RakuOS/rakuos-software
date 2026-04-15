@@ -14,6 +14,11 @@ Item {
     property bool opSuccess: false
     property bool overlayResetRunning: false
     property bool overlayResetSuccess: false
+    property bool switchImageRunning: false
+    property bool switchImageSuccess: false
+    property string switchImageTargetLabel: ""
+    property string switchImageTargetRepo: ""
+    property string switchImageTargetTag: ""
 
     // Available DE images (matching Python RAKUOS_IMAGES)
     property var deImages: [
@@ -108,6 +113,30 @@ Item {
 
     function currentBranchLabel(tag) {
         return tag && tag.indexOf("staging") === 0 ? "Staging" : "Stable";
+    }
+
+    function selectedSwitchTarget() {
+        if (!statusData) return null;
+        var selected = systemPage.deImages[deCombo.currentIndex];
+        var selectedBranch = systemPage.branchImages[branchCombo.currentIndex];
+        if (!selected || !selectedBranch) return null;
+
+        var parsed = parseImageRef(statusData.image || "");
+        var isNvidia = parsed.isNvidia;
+        var newName = selected.image_name + (isNvidia ? "-nvidia" : "");
+        var img = statusData.image || "";
+        var colonIdx = img.lastIndexOf(":");
+        var baseUrl = colonIdx > 0 ? img.substring(0, colonIdx) : img;
+        var slashIdx = baseUrl.lastIndexOf("/");
+        var repoBase = slashIdx > 0 ? baseUrl.substring(0, slashIdx) : baseUrl;
+        var newRepoUrl = repoBase + "/" + newName;
+
+        return {
+            repoUrl: newRepoUrl,
+            tag: selectedBranch.tag,
+            deLabel: selected.label,
+            branchLabel: selectedBranch.label
+        };
     }
 
 
@@ -364,7 +393,7 @@ Item {
                             id: switchBtn
                             text: "Switch Image"
                             enabled: {
-                                if (!statusData) return false;
+                                if (!statusData || systemPage.switchImageRunning) return false;
                                 var parsed = parseImageRef(statusData.image || "");
                                 var base = parsed.name.replace("-nvidia", "");
                                 var selected = systemPage.deImages[deCombo.currentIndex];
@@ -374,26 +403,12 @@ Item {
                                        (selected.image_name !== base || selectedBranch.label !== currentBranch);
                             }
                             onClicked: {
-                                if (!statusData) return;
-                                var selected = systemPage.deImages[deCombo.currentIndex];
-                                var selectedBranch = systemPage.branchImages[branchCombo.currentIndex];
-                                if (!selected) return;
-                                if (!selectedBranch) return;
-                                var parsed = parseImageRef(statusData.image || "");
-                                var isNvidia = parsed.isNvidia;
-                                var newName = selected.image_name + (isNvidia ? "-nvidia" : "");
-                                // Derive repo_url from current image (strip image name, replace)
-                                var img = statusData.image || "";
-                                var colonIdx = img.lastIndexOf(":");
-                                var baseUrl = colonIdx > 0 ? img.substring(0, colonIdx) : img;
-                                var slashIdx = baseUrl.lastIndexOf("/");
-                                var repoBase = slashIdx > 0 ? baseUrl.substring(0, slashIdx) : baseUrl;
-                                var newRepoUrl = repoBase + "/" + newName;
-                                backend.upgradeImage("switch", newRepoUrl, selectedBranch.tag);
-                                systemPage.upgrading = true;
-                                upgradePollTimer.start();
-                                switchStatus.text = "Switching to " + selected.label + " on " + selectedBranch.label + "…";
-                                switchStatus.color = root.dimText;
+                                var target = selectedSwitchTarget();
+                                if (!target) return;
+                                switchImageTargetLabel = target.deLabel + " on " + target.branchLabel;
+                                switchImageTargetRepo = target.repoUrl;
+                                switchImageTargetTag = target.tag;
+                                switchImageConfirmDlg.open();
                             }
                         }
 
@@ -566,6 +581,181 @@ Item {
         }
     }
 
+    // ── Image switch dialogs ─────────────────────────────────────────────────
+    Dialog {
+        id: switchImageConfirmDlg
+        title: "Switch Image?"
+        modal: true
+        standardButtons: Dialog.NoButton
+        width: 460
+        closePolicy: Popup.NoAutoClose
+
+        Column {
+            spacing: 12
+            width: switchImageConfirmDlg.width - 48
+
+            Label {
+                width: parent.width
+                text: "Switching images performs a full overlay reset before the new image is staged.\n\nThat means your current overlay changes and saved packages list will be wiped, and then the image switch will run with pkexec.\n\nDo you want to proceed with switching to " + switchImageTargetLabel + "?"
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: root.dimText
+            }
+
+            Rectangle {
+                width: parent.width
+                height: switchWarningCard.implicitHeight + 20
+                radius: 6
+                color: palette.button
+                border.color: "#b71c1c"
+                border.width: 1
+
+                Column {
+                    id: switchWarningCard
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                    spacing: 8
+
+                    Label { text: "Full Overlay Reset Required"; font.pixelSize: 13; font.bold: true; color: "#e53935" }
+                    Label {
+                        width: parent.width
+                        text: "The overlay will be fully reset first, then the selected image will be staged. Keep this window open until the process completes."
+                        wrapMode: Text.WordWrap
+                        color: root.dimText
+                        font.pixelSize: 11
+                    }
+                }
+            }
+
+            Row {
+                width: parent.width
+                spacing: 8
+
+                Button {
+                    width: (parent.width - 8) / 2
+                    implicitHeight: 32
+                    text: "Cancel"
+                    onClicked: switchImageConfirmDlg.close()
+                }
+
+                Button {
+                    width: (parent.width - 8) / 2
+                    implicitHeight: 32
+                    background: Rectangle { color: "#1565c0"; radius: 4 }
+                    contentItem: Label { text: "Proceed"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    onClicked: {
+                        switchImageConfirmDlg.close();
+                        switchImageRunning = true;
+                        switchImageSuccess = false;
+                        switchStatus.text = "";
+                        systemPage.upgrading = false;
+                        backend.switchImageWithReset(switchImageTargetRepo, switchImageTargetTag);
+                        switchImagePollTimer.start();
+                        switchImageProgressDlg.open();
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: switchImageProgressDlg
+        title: "Switching Image"
+        modal: true
+        standardButtons: Dialog.NoButton
+        width: 460
+        closePolicy: Popup.NoAutoClose
+
+        Column {
+            spacing: 14
+            width: switchImageProgressDlg.width - 48
+
+            Label {
+                width: parent.width
+                text: switchImageRunning
+                      ? "Please wait while RakuOS fully resets the overlay and switches to " + switchImageTargetLabel + "."
+                      : (switchImageSuccess
+                         ? "The image switch has been staged. Reboot to apply the new image."
+                         : "The image switch failed. You can close this dialog and review the logs.")
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: root.dimText
+            }
+
+            Row {
+                spacing: 10
+                visible: switchImageRunning
+
+                BusyIndicator {
+                    running: switchImageRunning
+                    implicitWidth: 26
+                    implicitHeight: 26
+                }
+
+                Label {
+                    text: "Please wait…"
+                    font.pixelSize: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 140
+                color: Qt.rgba(0, 0, 0, 0.75)
+                radius: 4
+                visible: true
+                clip: true
+
+                ScrollView {
+                    anchors.fill: parent
+                    contentWidth: availableWidth
+
+                    Label {
+                        text: backend.readLog()
+                        width: parent.width
+                        padding: 8
+                        color: "#d0d0d0"
+                        font.family: "monospace"
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                    }
+                }
+            }
+
+            Row {
+                width: parent.width
+                spacing: 8
+                visible: !switchImageRunning
+
+                Button {
+                    visible: !switchImageSuccess
+                    width: switchImageSuccess ? parent.width : (parent.width - 8) / 2
+                    implicitHeight: 32
+                    text: "Close"
+                    onClicked: switchImageProgressDlg.close()
+                }
+
+                Button {
+                    visible: switchImageSuccess
+                    width: switchImageSuccess ? (parent.width - 8) / 2 : 0
+                    implicitHeight: 32
+                    text: "Close"
+                    onClicked: switchImageProgressDlg.close()
+                }
+
+                Button {
+                    visible: switchImageSuccess
+                    width: switchImageSuccess ? (parent.width - 8) / 2 : 0
+                    implicitHeight: 32
+                    highlighted: true
+                    background: Rectangle { color: "#1976d2"; radius: 4 }
+                    contentItem: Label { text: "Reboot to Apply"; color: "white"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    onClicked: backend.rebootSystem()
+                }
+            }
+        }
+    }
+
     // ── Overlay reset dialog ──────────────────────────────────────────────────
     Dialog {
         id: overlayResetConfirmDlg
@@ -693,6 +883,27 @@ Item {
                     overlayResetSuccess = false;
                     overlayStatusLbl.text = "Reset failed. Check system logs.";
                     overlayStatusLbl.color = "#e53935";
+                }
+            }
+        }
+    }
+
+    Timer {
+        id: switchImagePollTimer
+        interval: 400
+        repeat: true
+        onTriggered: {
+            backend.pollOp();
+            if (!backend.opRunning) {
+                switchImagePollTimer.stop();
+                switchImageRunning = false;
+                switchImageSuccess = backend.opResult === 1;
+                if (switchImageSuccess) {
+                    switchStatus.text = "Switch staged — reboot to apply.";
+                    switchStatus.color = "#4caf50";
+                } else {
+                    switchStatus.text = "Image switch failed. Check the dialog log.";
+                    switchStatus.color = "#e53935";
                 }
             }
         }

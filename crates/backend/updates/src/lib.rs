@@ -43,6 +43,14 @@ pub struct OverlayStatus {
     pub is_dirty: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ImageChannelInfo {
+    repo_url: String,
+    repo_path: String,
+    channel_tag: String,
+    current_date_tag: String,
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Get current bootc image status.
@@ -75,31 +83,21 @@ pub async fn check_for_update() -> UpdateInfo {
         return UpdateInfo { error: Some(e), ..Default::default() };
     }
 
-    let image_full = &status.image; // e.g. ghcr.io/rakuos/rakuos-kde:latest
-    if image_full.is_empty() {
-        return UpdateInfo {
-            error: Some("Could not detect booted image".to_string()),
-            ..Default::default()
-        };
-    }
-
-    // Parse repo URL (strip :tag)
-    let repo_url = image_full.rsplit_once(':').map(|(u, _)| u).unwrap_or(image_full);
-    let repo_path = repo_url
-        .trim_start_matches("ghcr.io/")
-        .trim_start_matches("docker.io/");
-
-    // Current date tag from version string (e.g. "latest.20260308" → "20260308")
-    let current_tag = status.version.trim_start_matches("latest.").trim().to_string();
-
-    match get_latest_version_annotation(repo_path).await {
-        Ok((version_annotation, latest_digest)) => {
-            let newest_tag = version_annotation.trim_start_matches("latest.").trim().to_string();
-            let newest_tag_clean = if newest_tag.chars().all(|c| c.is_ascii_digit()) && newest_tag.len() == 8 {
-                newest_tag.clone()
-            } else {
-                String::new()
+    let channel = match parse_image_channel_info(&status.image, &status.version) {
+        Ok(info) => info,
+        Err(e) => {
+            return UpdateInfo {
+                error: Some(e),
+                current_version: status.version.clone(),
+                current_digest: status.digest.clone(),
+                ..Default::default()
             };
+        }
+    };
+
+    match get_latest_version_annotation(&channel.repo_path, &channel.channel_tag).await {
+        Ok((version_annotation, latest_digest)) => {
+            let newest_tag_clean = extract_date_tag(&version_annotation, &channel.channel_tag);
 
             if newest_tag_clean.is_empty() {
                 return UpdateInfo {
@@ -110,11 +108,19 @@ pub async fn check_for_update() -> UpdateInfo {
                 };
             }
 
-            let update_available = if current_tag.chars().all(|c| c.is_ascii_digit()) && current_tag.len() == 8 {
+            let update_available = if channel.current_date_tag.chars().all(|c| c.is_ascii_digit())
+                && channel.current_date_tag.len() == 8
+            {
                 newest_tag_clean.parse::<u64>().unwrap_or(0)
-                    > current_tag.parse::<u64>().unwrap_or(0)
+                    > channel.current_date_tag.parse::<u64>().unwrap_or(0)
             } else {
                 true // non-date tag — treat as needing update
+            };
+
+            let target_tag = if channel.channel_tag == "latest" {
+                newest_tag_clean.clone()
+            } else {
+                format!("{}.{}", channel.channel_tag, newest_tag_clean)
             };
 
             UpdateInfo {
@@ -124,9 +130,13 @@ pub async fn check_for_update() -> UpdateInfo {
                 current_digest: status.digest.clone(),
                 latest_version: version_annotation,
                 latest_digest,
-                new_version: format!("latest.{}", newest_tag_clean),
-                new_tag: newest_tag_clean,
-                repo_url: repo_url.to_string(),
+                new_version: if channel.channel_tag == "latest" {
+                    format!("latest.{}", newest_tag_clean)
+                } else {
+                    format!("{}.{}", channel.channel_tag, newest_tag_clean)
+                },
+                new_tag: target_tag,
+                repo_url: channel.repo_url,
                 error: None,
             }
         }
@@ -310,6 +320,49 @@ pub fn pkexec_switch_stream(target: &str) -> impl Iterator<Item = String> {
     run_stream_owned(vec!["pkexec".into(), "bootc".into(), "switch".into(), target.to_string()])
 }
 
+/// Run a full overlay reset and then switch to a new image target.
+/// This is used by the system page image switch flow so the overlay is reset
+/// before staging the new image.
+pub fn pkexec_reset_overlay_and_switch_stream(target: &str) -> impl Iterator<Item = String> {
+    use std::sync::mpsc;
+
+    let target = target.to_string();
+    let (tx, rx) = mpsc::channel::<String>();
+
+    std::thread::spawn(move || {
+        let _ = tx.send("Resetting overlay before image switch…".to_string());
+
+        let mut reset_exit = 1i32;
+        for line in reset_overlay_stream("full") {
+            if let Some(code) = line.strip_prefix("__done__") {
+                reset_exit = code.trim().parse().unwrap_or(1);
+            } else {
+                let _ = tx.send(line);
+            }
+        }
+
+        if reset_exit != 0 {
+            let _ = tx.send(format!("__done__{}", reset_exit));
+            return;
+        }
+
+        let _ = tx.send("Overlay reset complete. Switching image…".to_string());
+
+        let mut switch_exit = 1i32;
+        for line in pkexec_switch_stream(&target) {
+            if let Some(code) = line.strip_prefix("__done__") {
+                switch_exit = code.trim().parse().unwrap_or(1);
+            } else {
+                let _ = tx.send(line);
+            }
+        }
+
+        let _ = tx.send(format!("__done__{}", switch_exit));
+    });
+
+    rx.into_iter()
+}
+
 /// Run overlay reset via pkexec and stream output.
 /// mode: "soft" → --soft (preserves packages.list), "full" → --confirm (wipes everything).
 pub fn reset_overlay_stream(mode: &str) -> impl Iterator<Item = String> {
@@ -331,9 +384,9 @@ fn bootc_status_json() -> Result<serde_json::Value> {
 }
 
 /// Fetch GHCR token + version annotation for a repo. Returns (version, digest).
-async fn get_latest_version_annotation(repo_path: &str) -> Result<(String, String)> {
+async fn get_latest_version_annotation(repo_path: &str, channel_tag: &str) -> Result<(String, String)> {
     let token = get_ghcr_token(repo_path).await?;
-    let url = format!("https://ghcr.io/v2/{}/manifests/latest", repo_path);
+    let url = format!("https://ghcr.io/v2/{}/manifests/{}", repo_path, channel_tag);
     let client = reqwest::Client::new();
     let resp = client
         .get(&url)
@@ -374,6 +427,68 @@ async fn get_latest_version_annotation(repo_path: &str) -> Result<(String, Strin
         .to_string();
 
     Ok((version, digest))
+}
+
+fn parse_image_channel_info(image_full: &str, version: &str) -> std::result::Result<ImageChannelInfo, String> {
+    if image_full.is_empty() {
+        return Err("Could not detect booted image".to_string());
+    }
+
+    let (repo_url, current_image_tag) = image_full
+        .rsplit_once(':')
+        .unwrap_or((image_full, ""));
+    if repo_url.is_empty() || current_image_tag.is_empty() {
+        return Err("Could not parse booted image reference".to_string());
+    }
+
+    let repo_path = repo_url
+        .trim_start_matches("ghcr.io/")
+        .trim_start_matches("docker.io/")
+        .to_string();
+    if repo_path == repo_url {
+        return Err(format!("Could not parse GHCR repo path from: {}", repo_url));
+    }
+
+    let trimmed_version = version.trim().to_string();
+    let (channel_tag, current_date_tag) = if current_image_tag.len() == 8
+        && current_image_tag.chars().all(|c| c.is_ascii_digit())
+    {
+        ("latest".to_string(), current_image_tag.to_string())
+    } else if let Some((channel, date)) = current_image_tag.rsplit_once('.') {
+        if date.len() == 8 && date.chars().all(|c| c.is_ascii_digit()) {
+            (channel.to_string(), date.to_string())
+        } else {
+            (
+                current_image_tag.to_string(),
+                extract_date_tag(&trimmed_version, current_image_tag),
+            )
+        }
+    } else {
+        (
+            current_image_tag.to_string(),
+            extract_date_tag(&trimmed_version, current_image_tag),
+        )
+    };
+
+    Ok(ImageChannelInfo {
+        repo_url: repo_url.to_string(),
+        repo_path,
+        channel_tag,
+        current_date_tag,
+    })
+}
+
+fn extract_date_tag(version_annotation: &str, channel_tag: &str) -> String {
+    let trimmed = version_annotation.trim();
+    if let Some(stripped) = trimmed.strip_prefix(&format!("{}.", channel_tag)) {
+        if stripped.len() == 8 && stripped.chars().all(|c| c.is_ascii_digit()) {
+            return stripped.to_string();
+        }
+    }
+    if trimmed.len() == 8 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return trimmed.to_string();
+    }
+    String::new()
 }
 
 async fn get_ghcr_token(repo_path: &str) -> Result<String> {

@@ -582,6 +582,41 @@ pub struct SoftwareBackend {
         });
     }),
 
+    switchImageWithReset: qt_method!(fn switchImageWithReset(&mut self, repo_url: QString, new_tag: QString) {
+        let repo_url = repo_url.to_string();
+        let new_tag = new_tag.to_string();
+        self.start_op();
+        let shared = self.get_shared();
+        std::thread::spawn(move || {
+            let target = if !repo_url.is_empty() && !new_tag.is_empty() {
+                format!("{}:{}", repo_url, new_tag)
+            } else {
+                String::new()
+            };
+
+            let _ = std::fs::write(log_path(), "Preparing image switch...\n");
+
+            let mut exit_code = 1i32;
+            if target.is_empty() {
+                append_log("Image switch failed: missing target.");
+            } else {
+                for line in rakuos_updates::pkexec_reset_overlay_and_switch_stream(&target) {
+                    if let Some(code) = line.strip_prefix("__done__") {
+                        exit_code = code.trim().parse().unwrap_or(1);
+                    } else {
+                        if let Some(pct) = parse_layers_progress(&line) {
+                            shared.progress.store(pct, Ordering::Relaxed);
+                        }
+                        if !line.is_empty() { append_log(&line); }
+                    }
+                }
+            }
+
+            shared.result.store(if exit_code == 0 { 1 } else { 2 }, Ordering::Relaxed);
+            shared.running.store(false, Ordering::Relaxed);
+        });
+    }),
+
     rollbackSystem: qt_method!(fn rollbackSystem(&mut self) {
         self.start_op();
         let shared = self.get_shared();
