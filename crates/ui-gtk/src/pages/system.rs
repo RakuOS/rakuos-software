@@ -705,7 +705,7 @@ fn show_switch_dialog(
 ) {
     let dialog = Dialog::builder()
         .title("Switch Image?")
-        .can_close(false)
+        .can_close(true)
         .build();
 
     let content = GBox::builder()
