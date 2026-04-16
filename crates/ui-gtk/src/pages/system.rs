@@ -3,7 +3,7 @@
 use gtk4::prelude::*;
 use gtk4::{
     glib, Align, Box as GBox, Button, DropDown, Label, Orientation, Spinner,
-    ScrolledWindow, Separator, StringList, Widget,
+    ScrolledWindow, Separator, StringList, TextBuffer, TextView, Widget,
 };
 use libadwaita::prelude::*;
 use libadwaita::{ActionRow, Dialog, HeaderBar, PreferencesGroup, ToolbarView};
@@ -949,6 +949,26 @@ fn show_switch_progress_dialog(
         .build();
     content.append(&result_lbl);
 
+    let log_buffer = TextBuffer::new(None);
+    let log_view = TextView::builder()
+        .buffer(&log_buffer)
+        .editable(false)
+        .cursor_visible(false)
+        .monospace(true)
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .top_margin(8)
+        .bottom_margin(8)
+        .left_margin(8)
+        .right_margin(8)
+        .build();
+    let log_scroll = ScrolledWindow::builder()
+        .min_content_height(180)
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .child(&log_view)
+        .build();
+    content.append(&log_scroll);
+
     let actions = GBox::builder()
         .orientation(Orientation::Horizontal)
         .spacing(8)
@@ -967,10 +987,21 @@ fn show_switch_progress_dialog(
     actions.append(&reboot_action_btn);
     content.append(&actions);
 
-    let (tx, rx) = mpsc::channel::<bool>();
+    let (tx, rx) = mpsc::channel::<Result<String, bool>>();
     std::thread::spawn(move || {
-        let success = stream_succeeded(rakuos_updates::pkexec_reset_overlay_and_switch_stream(&target));
-        let _ = tx.send(success);
+        let mut saw_done = false;
+        let mut exit_code = 1i32;
+
+        for line in rakuos_updates::pkexec_reset_overlay_and_switch_stream(&target) {
+            if let Some(code) = line.strip_prefix("__done__") {
+                saw_done = true;
+                exit_code = code.trim().parse().unwrap_or(1);
+            } else {
+                let _ = tx.send(Ok(line));
+            }
+        }
+
+        let _ = tx.send(Err(saw_done && exit_code == 0));
     });
 
     let dialog_c = dialog.clone();
@@ -985,43 +1016,57 @@ fn show_switch_progress_dialog(
     dialog.present(parent_window.as_ref());
 
     glib::timeout_add_local(Duration::from_millis(80), move || {
-        match rx.try_recv() {
-            Ok(ok) => {
-                spinner.set_spinning(false);
-                spinner.set_visible(false);
-                progress_lbl.set_visible(false);
-                result_lbl.set_visible(true);
-                switch_btn.set_label("Switch Image");
-                switch_btn.set_sensitive(true);
+        let mut finished = None;
 
-                if ok {
-                    dialog.set_can_close(true);
-                    result_lbl.set_label("Image switch staged — reboot to apply.");
-                    result_lbl.add_css_class("success");
-                    reboot_action_btn.set_visible(true);
-                    reboot_btn.set_visible(true);
-                    status_lbl.set_label("Switch staged — reboot to apply.");
-                    status_lbl.remove_css_class("error");
-                    status_lbl.add_css_class("success");
-                    status_lbl.set_visible(true);
-                } else {
-                    dialog.set_can_close(true);
-                    result_lbl.set_label("Image switch failed. Review the system logs and try again.");
-                    result_lbl.add_css_class("error");
-                    close_btn.set_visible(true);
-                    status_lbl.set_label("Image switch failed. Check system logs.");
-                    status_lbl.remove_css_class("success");
-                    status_lbl.add_css_class("error");
-                    status_lbl.set_visible(true);
+        loop {
+            match rx.try_recv() {
+                Ok(Ok(line)) => {
+                    let mut end = log_buffer.end_iter();
+                    log_buffer.insert(&mut end, &(line + "\n"));
                 }
-                glib::ControlFlow::Break
+                Ok(Err(ok)) => {
+                    finished = Some(ok);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(_) => {
+                    finished = Some(false);
+                    break;
+                }
             }
-            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-            Err(_) => {
-                switch_btn.set_label("Switch Image");
-                switch_btn.set_sensitive(true);
-                glib::ControlFlow::Break
+        }
+
+        if let Some(ok) = finished {
+            spinner.set_spinning(false);
+            spinner.set_visible(false);
+            progress_lbl.set_visible(false);
+            result_lbl.set_visible(true);
+            switch_btn.set_label("Switch Image");
+            switch_btn.set_sensitive(true);
+
+            if ok {
+                dialog.set_can_close(true);
+                result_lbl.set_label("Image switch staged — reboot to apply.");
+                result_lbl.add_css_class("success");
+                reboot_action_btn.set_visible(true);
+                reboot_btn.set_visible(true);
+                status_lbl.set_label("Switch staged — reboot to apply.");
+                status_lbl.remove_css_class("error");
+                status_lbl.add_css_class("success");
+                status_lbl.set_visible(true);
+            } else {
+                dialog.set_can_close(true);
+                result_lbl.set_label("Image switch failed. Review the system logs and try again.");
+                result_lbl.add_css_class("error");
+                close_btn.set_visible(true);
+                status_lbl.set_label("Image switch failed. Check system logs.");
+                status_lbl.remove_css_class("success");
+                status_lbl.add_css_class("error");
+                status_lbl.set_visible(true);
             }
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
         }
     });
 }

@@ -19,6 +19,7 @@ Item {
     property string switchImageTargetLabel: ""
     property string switchImageTargetRepo: ""
     property string switchImageTargetTag: ""
+    property string switchImageLog: ""
 
     // Available DE images (matching Python RAKUOS_IMAGES)
     property var deImages: [
@@ -646,6 +647,7 @@ Item {
                         switchImageConfirmDlg.close();
                         switchImageRunning = true;
                         switchImageSuccess = false;
+                        switchImageLog = "";
                         switchStatus.text = "";
                         systemPage.upgrading = false;
                         backend.switchImageWithReset(switchImageTargetRepo, switchImageTargetTag);
@@ -711,7 +713,8 @@ Item {
                     contentWidth: availableWidth
 
                     Label {
-                        text: backend.readLog()
+                        id: switchImageLogLabel
+                        text: switchImageLog
                         width: parent.width
                         padding: 8
                         color: "#d0d0d0"
@@ -894,6 +897,7 @@ Item {
         repeat: true
         onTriggered: {
             backend.pollOp();
+            switchImageLog = backend.readLog();
             if (!backend.opRunning) {
                 switchImagePollTimer.stop();
                 switchImageRunning = false;
