@@ -27,18 +27,58 @@ const BRANCH_LABELS: &[(&str, &str)] = &[
 
 fn parse_image_ref(image: &str) -> (String, String, bool) {
     let (image_path, tag) = image.rsplit_once(':').unwrap_or((image, ""));
-    let name = image_path.split('/').last().unwrap_or("").to_string();
-    let is_nvidia = name.ends_with("-nvidia");
-    (name, tag.to_string(), is_nvidia)
+    let path_without_registry = image_path
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or(image_path);
+    let normalized_path = if path_without_registry.contains("/rakuos/") {
+        path_without_registry
+            .split_once("rakuos/")
+            .map(|(_, rest)| rest)
+            .unwrap_or(path_without_registry)
+    } else {
+        path_without_registry
+    };
+    let is_nvidia = normalized_path.ends_with("/nvidia") || normalized_path.ends_with("-nvidia");
+    let base_name = if normalized_path.ends_with("/nvidia") {
+        normalized_path
+            .trim_end_matches("/nvidia")
+            .split('/')
+            .last()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        normalized_path
+            .split('/')
+            .last()
+            .unwrap_or("")
+            .trim_end_matches("-nvidia")
+            .to_string()
+    };
+    (base_name, tag.to_string(), is_nvidia)
+}
+
+fn canonical_repo_url(image: &str, de_id: &str, is_nvidia: bool) -> String {
+    let (image_path, _) = image.rsplit_once(':').unwrap_or((image, ""));
+    let base_repo = match image_path {
+        path if path.starts_with("registry.gitlab.com/") => "registry.gitlab.com/rakuos/images",
+        path if path.starts_with("ghcr.io/") => "registry.gitlab.com/rakuos/images",
+        path if path.starts_with("docker.io/") => "registry.gitlab.com/rakuos/images",
+        _ => "registry.gitlab.com/rakuos/images",
+    };
+    if is_nvidia {
+        format!("{}/{}/nvidia", base_repo, de_id)
+    } else {
+        format!("{}/{}", base_repo, de_id)
+    }
 }
 
 fn de_label_from_image(image: &str) -> String {
     let (name, _, is_nvidia) = parse_image_ref(image);
-    let base = name.trim_end_matches("-nvidia");
     let label = DE_LABELS.iter()
-        .find(|(_, id)| *id == base)
+        .find(|(_, id)| *id == name)
         .map(|(lbl, _)| *lbl)
-        .unwrap_or(base);
+        .unwrap_or(name.as_str());
     if is_nvidia { format!("{} (Nvidia)", label) } else { label.to_string() }
 }
 
@@ -62,13 +102,7 @@ fn selected_image_differs(current_image: &str, de_idx: usize, branch_idx: usize)
         return false;
     };
 
-    let (name, current_tag, is_nvidia) = parse_image_ref(current_image);
-    let current_base = name.trim_end_matches("-nvidia");
-    let selected_name = if is_nvidia {
-        format!("{}-nvidia", de_id)
-    } else {
-        de_id.to_string()
-    };
+    let (name, current_tag, _) = parse_image_ref(current_image);
 
     let branch_matches = if branch_tag == "staging" {
         current_tag.starts_with("staging")
@@ -76,7 +110,7 @@ fn selected_image_differs(current_image: &str, de_idx: usize, branch_idx: usize)
         !current_tag.starts_with("staging")
     };
 
-    selected_name != name || current_base != de_id || !branch_matches
+    name != de_id || !branch_matches
 }
 
 fn stream_succeeded<I>(stream: I) -> bool
@@ -476,11 +510,11 @@ pub fn build() -> Widget {
             let Some(&(de_label, de_id)) = DE_LABELS.get(idx) else { return; };
             let Some(&(branch_label, branch_tag)) = BRANCH_LABELS.get(branch_idx) else { return; };
             let (_, _, is_nvidia) = parse_image_ref(&img);
-            let new_name = if is_nvidia { format!("{}-nvidia", de_id) } else { de_id.to_string() };
-            // Derive base repo URL: strip everything from last '/' before ':'
-            let base = img.split(':').next().unwrap_or("");
-            let repo_base = base.rsplitn(2, '/').nth(1).unwrap_or(base);
-            let target = format!("{}/{}:{}", repo_base, new_name, branch_tag);
+            let target = format!(
+                "{}:{}",
+                canonical_repo_url(&img, de_id, is_nvidia),
+                branch_tag
+            );
             show_switch_dialog(
                 outer_w.upcast_ref::<gtk4::Widget>(),
                 &target,
@@ -541,8 +575,7 @@ pub fn build() -> Widget {
 
                     // Set DE combo to current DE
                     let (name, _, _) = parse_image_ref(&status.image);
-                    let base = name.trim_end_matches("-nvidia");
-                    if let Some(idx) = DE_LABELS.iter().position(|(_, id)| *id == base) {
+                    if let Some(idx) = DE_LABELS.iter().position(|(_, id)| *id == name) {
                         de_combo.set_selected(idx as u32);
                     }
                     if let Some(idx) = BRANCH_LABELS.iter().position(|(_, branch_tag)| {

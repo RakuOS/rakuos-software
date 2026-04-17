@@ -99,15 +99,43 @@ Item {
         if (!imageRef) return { name: "", tag: "", isNvidia: false };
         var parts = imageRef.split(":");
         var tag = parts.length > 1 ? parts[parts.length - 1] : "";
-        var path = (parts[0] || "").replace("ghcr.io/", "").replace("docker.io/", "");
-        var name = path.split("/").pop();
-        return { name: name, tag: tag, isNvidia: name.endsWith("-nvidia") };
+        var imagePath = parts[0] || "";
+        var firstSlash = imagePath.indexOf("/");
+        var pathWithoutRegistry = firstSlash >= 0 ? imagePath.substring(firstSlash + 1) : imagePath;
+        var normalizedPath = pathWithoutRegistry.indexOf("/rakuos/") >= 0
+                           ? pathWithoutRegistry.split("rakuos/")[1]
+                           : pathWithoutRegistry;
+        var isNvidia = normalizedPath.endsWith("/nvidia") || normalizedPath.endsWith("-nvidia");
+        var name = "";
+
+        if (normalizedPath.endsWith("/nvidia")) {
+            var withoutNvidia = normalizedPath.substring(0, normalizedPath.length - "/nvidia".length);
+            var segments = withoutNvidia.split("/");
+            name = segments[segments.length - 1];
+        } else {
+            var finalSegment = normalizedPath.split("/").pop();
+            name = finalSegment.replace(/-nvidia$/, "");
+        }
+
+        return { name: name, tag: tag, isNvidia: isNvidia };
+    }
+
+    function canonicalRepoUrl(currentImage, deId, isNvidia) {
+        var imagePath = (currentImage || "").split(":")[0] || "";
+        var baseRepo = "registry.gitlab.com/rakuos/images";
+        if (imagePath.indexOf("registry.gitlab.com/") === 0 ||
+            imagePath.indexOf("ghcr.io/") === 0 ||
+            imagePath.indexOf("docker.io/") === 0) {
+            baseRepo = "registry.gitlab.com/rakuos/images";
+        }
+
+        return isNvidia ? (baseRepo + "/" + deId + "/nvidia")
+                        : (baseRepo + "/" + deId);
     }
 
     function currentDELabel(imageName) {
-        var base = imageName.replace("-nvidia", "");
         for (var i = 0; i < deImages.length; i++) {
-            if (deImages[i].image_name === base) return deImages[i].label;
+            if (deImages[i].image_name === imageName) return deImages[i].label;
         }
         return imageName;
     }
@@ -124,16 +152,9 @@ Item {
 
         var parsed = parseImageRef(statusData.image || "");
         var isNvidia = parsed.isNvidia;
-        var newName = selected.image_name + (isNvidia ? "-nvidia" : "");
-        var img = statusData.image || "";
-        var colonIdx = img.lastIndexOf(":");
-        var baseUrl = colonIdx > 0 ? img.substring(0, colonIdx) : img;
-        var slashIdx = baseUrl.lastIndexOf("/");
-        var repoBase = slashIdx > 0 ? baseUrl.substring(0, slashIdx) : baseUrl;
-        var newRepoUrl = repoBase + "/" + newName;
 
         return {
-            repoUrl: newRepoUrl,
+            repoUrl: canonicalRepoUrl(statusData.image || "", selected.image_name, isNvidia),
             tag: selectedBranch.tag,
             deLabel: selected.label,
             branchLabel: selectedBranch.label
@@ -371,9 +392,8 @@ Item {
                             currentIndex: {
                                 if (!statusData) return 0;
                                 var parsed = parseImageRef(statusData.image || "");
-                                var base = parsed.name.replace("-nvidia", "");
                                 for (var i = 0; i < systemPage.deImages.length; i++) {
-                                    if (systemPage.deImages[i].image_name === base) return i;
+                                    if (systemPage.deImages[i].image_name === parsed.name) return i;
                                 }
                                 return 0;
                             }
@@ -396,12 +416,11 @@ Item {
                             enabled: {
                                 if (!statusData || systemPage.switchImageRunning) return false;
                                 var parsed = parseImageRef(statusData.image || "");
-                                var base = parsed.name.replace("-nvidia", "");
                                 var selected = systemPage.deImages[deCombo.currentIndex];
                                 var selectedBranch = systemPage.branchImages[branchCombo.currentIndex];
                                 var currentBranch = currentBranchLabel(parsed.tag);
                                 return selected && selectedBranch &&
-                                       (selected.image_name !== base || selectedBranch.label !== currentBranch);
+                                       (selected.image_name !== parsed.name || selectedBranch.label !== currentBranch);
                             }
                             onClicked: {
                                 var target = selectedSwitchTarget();

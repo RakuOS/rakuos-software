@@ -1,7 +1,8 @@
 // rakuos-updates — System update management via bootc
 // Mirrors src/backend/updates.py
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use reqwest::header::{ACCEPT, AUTHORIZATION, WWW_AUTHENTICATE};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -46,6 +47,7 @@ pub struct OverlayStatus {
 #[derive(Debug, Clone)]
 struct ImageChannelInfo {
     repo_url: String,
+    registry_host: String,
     repo_path: String,
     channel_tag: String,
     current_date_tag: String,
@@ -75,8 +77,7 @@ pub fn get_system_status() -> SystemStatus {
     }
 }
 
-/// Check GHCR for a newer image using version annotation + date tag comparison.
-/// Mirrors Python's check_for_update() logic exactly.
+/// Check the current OCI registry for a newer image using version annotation + date tag comparison.
 pub async fn check_for_update() -> UpdateInfo {
     let status = get_system_status();
     if let Some(e) = status.error {
@@ -95,7 +96,7 @@ pub async fn check_for_update() -> UpdateInfo {
         }
     };
 
-    match get_latest_version_annotation(&channel.repo_path, &channel.channel_tag).await {
+    match get_latest_version_annotation(&channel.registry_host, &channel.repo_path, &channel.channel_tag).await {
         Ok((version_annotation, latest_digest)) => {
             let newest_tag_clean = extract_date_tag(&version_annotation, &channel.channel_tag);
 
@@ -257,7 +258,7 @@ pub fn check_image_script() -> (bool, serde_json::Value) {
         }
     }
 
-    // No pending staged image — check GHCR/bootc for available updates.
+    // No pending staged image — check the registry/bootc for available updates.
     let out = Command::new("/usr/libexec/rakuos/rakuos-update")
         .arg("check-image")
         .output();
@@ -383,16 +384,24 @@ fn bootc_status_json() -> Result<serde_json::Value> {
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
-/// Fetch GHCR token + version annotation for a repo. Returns (version, digest).
-async fn get_latest_version_annotation(repo_path: &str, channel_tag: &str) -> Result<(String, String)> {
-    let token = get_ghcr_token(repo_path).await?;
-    let url = format!("https://ghcr.io/v2/{}/manifests/{}", repo_path, channel_tag);
+/// Fetch version annotation for a repo from the current OCI registry. Returns (version, digest).
+async fn get_latest_version_annotation(
+    registry_host: &str,
+    repo_path: &str,
+    channel_tag: &str,
+) -> Result<(String, String)> {
+    let url = format!("https://{}/v2/{}/manifests/{}", registry_host, repo_path, channel_tag);
     let client = reqwest::Client::new();
-    let resp = client
+    let token = get_registry_token(&client, registry_host, repo_path, channel_tag).await?;
+    let mut manifest_req = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+        .header(ACCEPT, "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json");
+    if let Some(token) = token.as_deref() {
+        manifest_req = manifest_req.header(AUTHORIZATION, format!("Bearer {}", token));
+    }
+    let resp = manifest_req
         .send().await?
+        .error_for_status()?
         .json::<serde_json::Value>().await?;
 
     // Try manifest-level annotations first
@@ -405,11 +414,14 @@ async fn get_latest_version_annotation(repo_path: &str, channel_tag: &str) -> Re
     // Fallback: check config blob labels
     if version.is_empty() {
         if let Some(config_digest) = resp["config"]["digest"].as_str() {
-            let blob_url = format!("https://ghcr.io/v2/{}/blobs/{}", repo_path, config_digest);
-            if let Ok(blob) = client
-                .get(&blob_url)
-                .header("Authorization", format!("Bearer {}", token))
+            let blob_url = format!("https://{}/v2/{}/blobs/{}", registry_host, repo_path, config_digest);
+            let mut blob_req = client.get(&blob_url);
+            if let Some(token) = token.as_deref() {
+                blob_req = blob_req.header(AUTHORIZATION, format!("Bearer {}", token));
+            }
+            if let Ok(blob) = blob_req
                 .send().await?
+                .error_for_status()?
                 .json::<serde_json::Value>().await
             {
                 version = blob["config"]["Labels"]
@@ -441,12 +453,13 @@ fn parse_image_channel_info(image_full: &str, version: &str) -> std::result::Res
         return Err("Could not parse booted image reference".to_string());
     }
 
-    let repo_path = repo_url
-        .trim_start_matches("ghcr.io/")
-        .trim_start_matches("docker.io/")
-        .to_string();
-    if repo_path == repo_url {
-        return Err(format!("Could not parse GHCR repo path from: {}", repo_url));
+    let repo_url = canonicalize_repo_url(repo_url);
+
+    let (registry_host, repo_path) = repo_url
+        .split_once('/')
+        .ok_or_else(|| format!("Could not parse registry repo path from: {}", repo_url))?;
+    if registry_host.is_empty() || repo_path.is_empty() {
+        return Err(format!("Could not parse registry repo path from: {}", repo_url));
     }
 
     let trimmed_version = version.trim().to_string();
@@ -471,8 +484,9 @@ fn parse_image_channel_info(image_full: &str, version: &str) -> std::result::Res
     };
 
     Ok(ImageChannelInfo {
-        repo_url: repo_url.to_string(),
-        repo_path,
+        repo_url: repo_url.clone(),
+        registry_host: registry_host.to_string(),
+        repo_path: repo_path.to_string(),
         channel_tag,
         current_date_tag,
     })
@@ -481,23 +495,119 @@ fn parse_image_channel_info(image_full: &str, version: &str) -> std::result::Res
 fn extract_date_tag(version_annotation: &str, channel_tag: &str) -> String {
     let trimmed = version_annotation.trim();
     if let Some(stripped) = trimmed.strip_prefix(&format!("{}.", channel_tag)) {
-        if stripped.len() == 8 && stripped.chars().all(|c| c.is_ascii_digit()) {
-            return stripped.to_string();
+        if let Some(date) = stripped
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|part| part.len() == 8 && part.chars().all(|c| c.is_ascii_digit()))
+        {
+            return date.to_string();
         }
     }
     if trimmed.len() == 8 && trimmed.chars().all(|c| c.is_ascii_digit()) {
         return trimmed.to_string();
     }
+    if let Some(date) = trimmed
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|part| part.len() == 8 && part.chars().all(|c| c.is_ascii_digit()))
+    {
+        return date.to_string();
+    }
     String::new()
 }
 
-async fn get_ghcr_token(repo_path: &str) -> Result<String> {
-    let url = format!(
-        "https://ghcr.io/token?scope=repository:{}:pull&service=ghcr.io",
-        repo_path
-    );
-    let resp = reqwest::get(&url).await?.json::<serde_json::Value>().await?;
-    Ok(resp["token"].as_str().unwrap_or("").to_string())
+async fn get_registry_token(
+    client: &reqwest::Client,
+    registry_host: &str,
+    repo_path: &str,
+    channel_tag: &str,
+) -> Result<Option<String>> {
+    let manifest_url = format!("https://{}/v2/{}/manifests/{}", registry_host, repo_path, channel_tag);
+    let resp = client
+        .get(&manifest_url)
+        .header(ACCEPT, "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+        .send()
+        .await?;
+
+    if resp.status().is_success() {
+        return Ok(None);
+    }
+
+    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(anyhow!("Unexpected registry response from {}: HTTP {}", manifest_url, resp.status()));
+    }
+
+    let challenge = resp
+        .headers()
+        .get(WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| anyhow!("Registry did not provide an authentication challenge"))?;
+
+    let realm = parse_auth_challenge_value(challenge, "realm")
+        .ok_or_else(|| anyhow!("Could not parse registry auth realm"))?;
+    let service = parse_auth_challenge_value(challenge, "service");
+    let scope = parse_auth_challenge_value(challenge, "scope")
+        .unwrap_or_else(|| format!("repository:{}:pull", repo_path));
+
+    let mut token_req = client.get(&realm).query(&[("scope", scope.as_str())]);
+    if let Some(service) = service.as_deref() {
+        token_req = token_req.query(&[("service", service)]);
+    }
+
+    let token_resp = token_req
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let token = token_resp["token"]
+        .as_str()
+        .or_else(|| token_resp["access_token"].as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if token.is_empty() {
+        return Err(anyhow!("Failed to get registry token for {}", repo_path));
+    }
+
+    Ok(Some(token))
+}
+
+fn parse_auth_challenge_value(header: &str, key: &str) -> Option<String> {
+    let pattern = format!(r#"{}=""#, key);
+    let start = header.find(&pattern)? + pattern.len();
+    let rest = &header[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn canonicalize_repo_url(repo_url: &str) -> String {
+    match repo_url {
+        "ghcr.io/rakuos/rakuos-base" | "registry.gitlab.com/rakuos/images/rakuos-base" => {
+            "registry.gitlab.com/rakuos/images/rakuos-base".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-base-nvidia" | "registry.gitlab.com/rakuos/images/rakuos-base/nvidia" => {
+            "registry.gitlab.com/rakuos/images/rakuos-base/nvidia".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-kde" | "registry.gitlab.com/rakuos/images/rakuos-kde" => {
+            "registry.gitlab.com/rakuos/images/rakuos-kde".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-kde-nvidia" | "registry.gitlab.com/rakuos/images/rakuos-kde/nvidia" => {
+            "registry.gitlab.com/rakuos/images/rakuos-kde/nvidia".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-gnome" | "registry.gitlab.com/rakuos/images/rakuos-gnome" => {
+            "registry.gitlab.com/rakuos/images/rakuos-gnome".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-gnome-nvidia" | "registry.gitlab.com/rakuos/images/rakuos-gnome/nvidia" => {
+            "registry.gitlab.com/rakuos/images/rakuos-gnome/nvidia".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-cosmic" | "registry.gitlab.com/rakuos/images/rakuos-cosmic" => {
+            "registry.gitlab.com/rakuos/images/rakuos-cosmic".to_string()
+        }
+        "ghcr.io/rakuos/rakuos-cosmic-nvidia" | "registry.gitlab.com/rakuos/images/rakuos-cosmic/nvidia" => {
+            "registry.gitlab.com/rakuos/images/rakuos-cosmic/nvidia".to_string()
+        }
+        _ => repo_url.to_string(),
+    }
 }
 
 fn run_stream_owned(cmd: Vec<String>) -> impl Iterator<Item = String> {
