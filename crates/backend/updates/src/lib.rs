@@ -267,7 +267,7 @@ pub fn check_image_script() -> (bool, serde_json::Value) {
     };
     let data: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or(serde_json::json!({}));
-    let available = data["update"].as_bool().unwrap_or(false);
+    let available = data["update"].as_bool().unwrap_or_else(|| out.status.success());
     (available, data)
 }
 
@@ -378,10 +378,27 @@ pub fn reset_overlay_stream(mode: &str) -> impl Iterator<Item = String> {
 // ── Internals ─────────────────────────────────────────────────────────────────
 
 fn bootc_status_json() -> Result<serde_json::Value> {
-    let out = Command::new("sudo")
+    let out = Command::new("bootc")
+        .args(["status", "--json"])
+        .output()?;
+
+    if out.status.success() {
+        return Ok(serde_json::from_slice(&out.stdout)?);
+    }
+
+    let sudo_out = Command::new("sudo")
         .args(["bootc", "status", "--json"])
         .output()?;
-    Ok(serde_json::from_slice(&out.stdout)?)
+
+    if sudo_out.status.success() {
+        return Ok(serde_json::from_slice(&sudo_out.stdout)?);
+    }
+
+    let stderr = String::from_utf8_lossy(&sudo_out.stderr).trim().to_string();
+    Err(anyhow!(
+        "failed to read bootc status: {}",
+        if stderr.is_empty() { "unknown error" } else { &stderr }
+    ))
 }
 
 /// Fetch version annotation for a repo from the current OCI registry. Returns (version, digest).

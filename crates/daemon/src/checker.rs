@@ -247,7 +247,9 @@ async fn run_rakuos_update_image() -> anyhow::Result<(bool, serde_json::Value)> 
     let data: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or(serde_json::json!({}));
 
-    Ok((out.status.success(), data))
+    let available = data["update"].as_bool().unwrap_or_else(|| out.status.success());
+
+    Ok((available, data))
 }
 
 /// Check all installed AppImages in parallel, each with an individual timeout.
