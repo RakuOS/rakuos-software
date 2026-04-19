@@ -119,14 +119,16 @@ pub async fn check_for_update() -> UpdateInfo {
                 true // non-date tag — treat as needing update
             };
 
-            let target_tag = if channel.channel_tag == "latest" {
+            let is_legacy_ghcr = channel.original_repo_url.starts_with("ghcr.io/rakuos/")
+                && channel.original_repo_url != channel.repo_url;
+
+            let target_tag = if is_legacy_ghcr {
+                channel.channel_tag.clone()
+            } else if channel.channel_tag == "latest" {
                 newest_tag_clean.clone()
             } else {
                 format!("{}.{}", channel.channel_tag, newest_tag_clean)
             };
-
-            let is_legacy_ghcr = channel.original_repo_url.starts_with("ghcr.io/rakuos/")
-                && channel.original_repo_url != channel.repo_url;
 
             UpdateInfo {
                 available: is_legacy_ghcr || update_available,
@@ -135,7 +137,9 @@ pub async fn check_for_update() -> UpdateInfo {
                 current_digest: status.digest.clone(),
                 latest_version: version_annotation,
                 latest_digest,
-                new_version: if channel.channel_tag == "latest" {
+                new_version: if is_legacy_ghcr {
+                    channel.channel_tag.clone()
+                } else if channel.channel_tag == "latest" {
                     format!("latest.{}", newest_tag_clean)
                 } else {
                     format!("{}.{}", channel.channel_tag, newest_tag_clean)
