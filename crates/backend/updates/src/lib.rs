@@ -46,6 +46,7 @@ pub struct OverlayStatus {
 
 #[derive(Debug, Clone)]
 struct ImageChannelInfo {
+    original_repo_url: String,
     repo_url: String,
     registry_host: String,
     repo_path: String,
@@ -124,8 +125,11 @@ pub async fn check_for_update() -> UpdateInfo {
                 format!("{}.{}", channel.channel_tag, newest_tag_clean)
             };
 
+            let is_legacy_ghcr = channel.original_repo_url.starts_with("ghcr.io/rakuos/")
+                && channel.original_repo_url != channel.repo_url;
+
             UpdateInfo {
-                available: update_available,
+                available: is_legacy_ghcr || update_available,
                 reboot_required: false,
                 current_version: status.version.clone(),
                 current_digest: status.digest.clone(),
@@ -463,14 +467,14 @@ fn parse_image_channel_info(image_full: &str, version: &str) -> std::result::Res
         return Err("Could not detect booted image".to_string());
     }
 
-    let (repo_url, current_image_tag) = image_full
+    let (original_repo_url, current_image_tag) = image_full
         .rsplit_once(':')
         .unwrap_or((image_full, ""));
-    if repo_url.is_empty() || current_image_tag.is_empty() {
+    if original_repo_url.is_empty() || current_image_tag.is_empty() {
         return Err("Could not parse booted image reference".to_string());
     }
 
-    let repo_url = canonicalize_repo_url(repo_url);
+    let repo_url = canonicalize_repo_url(original_repo_url);
 
     let (registry_host, repo_path) = repo_url
         .split_once('/')
@@ -501,6 +505,7 @@ fn parse_image_channel_info(image_full: &str, version: &str) -> std::result::Res
     };
 
     Ok(ImageChannelInfo {
+        original_repo_url: original_repo_url.to_string(),
         repo_url: repo_url.clone(),
         registry_host: registry_host.to_string(),
         repo_path: repo_path.to_string(),
