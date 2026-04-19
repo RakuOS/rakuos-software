@@ -124,8 +124,6 @@ pub async fn check_for_update() -> UpdateInfo {
 
             let target_tag = if is_legacy_ghcr {
                 channel.channel_tag.clone()
-            } else if channel.channel_tag == "latest" {
-                newest_tag_clean.clone()
             } else {
                 format!("{}.{}", channel.channel_tag, newest_tag_clean)
             };
